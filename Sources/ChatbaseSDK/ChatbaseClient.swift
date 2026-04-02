@@ -103,7 +103,7 @@ public final class ChatStream: AsyncSequence, @unchecked Sendable {
 
     private let stream: AsyncThrowingStream<ChatEvent, Error>
     private var task: Task<Void, Never>?
-    private(set) var isCancelled = false
+    public private(set) var isCancelled = false
 
     init(rawStream: AsyncThrowingStream<StreamEvent, Error>, conversationId: String?, service: ChatService) {
         let (chatStream, continuation) = AsyncThrowingStream<ChatEvent, Error>.makeStream()
@@ -136,7 +136,7 @@ public final class ChatStream: AsyncSequence, @unchecked Sendable {
         }
     }
 
-    nonisolated func cancel() {
+    nonisolated public func cancel() {
         isCancelled = true
         task?.cancel()
     }

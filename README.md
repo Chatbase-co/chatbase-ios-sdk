@@ -84,6 +84,22 @@ await call.fail("Cancelled", continue: false)
 call.ignore()
 ```
 
+## Cancelling a Stream
+
+```swift
+let stream = client.stream("Tell me a story", conversationId: id)
+
+Task {
+    for try await event in stream {
+        if case .text(let chunk) = event { print(chunk, terminator: "") }
+    }
+}
+
+// Cancel from anywhere
+stream.cancel()
+stream.isCancelled  // true
+```
+
 ## Conversations
 
 ```swift
