@@ -22,29 +22,20 @@ struct ChatServiceTests {
 
     // MARK: - sendMessage
 
-    @Test("returns text, conversationId, usage, and finishReason")
-    func sendMessageBasic() async throws {
-        mockClient.respondWithRawJSON("""
-        {
-            "data": {
-                "id": "msg-1",
-                "role": "assistant",
-                "parts": [{"type": "text", "text": "Hello!"}],
-                "metadata": {
-                    "conversationId": "conv-1",
-                    "userMessageId": "user-msg-1",
-                    "userId": null,
-                    "finishReason": "stop",
-                    "usage": {"credits": 1}
-                }
-            }
-        }
-        """)
+    @Test("sendMessage streams and collects into ChatResponse")
+    func sendMessageStreamsAndCollects() async throws {
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
+            "data: {\"type\":\"text-delta\",\"delta\":\"Hello\"}",
+            "data: {\"type\":\"text-delta\",\"delta\":\", world\"}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"messageId\":\"msg-1\",\"userMessageId\":\"user-msg-1\",\"userId\":null,\"finishReason\":\"stop\",\"usage\":{\"credits\":1}}}",
+            "data: [DONE]"
+        ])
 
         let response = try await service.sendMessage("Hi")
 
         await #expect(response.message.id == "msg-1")
-        await #expect(response.message.text == "Hello!")
+        await #expect(response.message.text == "Hello, world")
         await #expect(response.message.sender == .agent)
         await #expect(response.conversationId == "conv-1")
         await #expect(response.userMessageId == "user-msg-1")
@@ -52,99 +43,46 @@ struct ChatServiceTests {
         await #expect(response.usage.credits == 1)
     }
 
-    @Test("passes conversationId in request body")
-    func sendMessageWithConversationId() async throws {
-        mockClient.respondWithRawJSON("""
-        {
-            "data": {
-                "id": "msg-1",
-                "role": "assistant",
-                "parts": [{"type": "text", "text": "Reply"}],
-                "metadata": {
-                    "conversationId": "conv-1",
-                    "userMessageId": "user-msg-2",
-                    "userId": null,
-                    "finishReason": "stop",
-                    "usage": {"credits": 1}
-                }
-            }
-        }
-        """)
-
+    @Test("sendMessage request body omits the stream field and includes conversationId")
+    func sendMessageBodyOmitsStream() async throws {
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"m\"}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"messageId\":\"m\",\"userMessageId\":\"user-msg-2\",\"userId\":null,\"finishReason\":\"stop\",\"usage\":{\"credits\":1}}}",
+            "data: [DONE]"
+        ])
         _ = try await service.sendMessage("Follow up", conversationId: "conv-1")
 
         let body = try #require(mockClient.lastRequest?.httpBody)
         let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
         #expect(json["conversationId"] as? String == "conv-1")
         #expect(json["message"] as? String == "Follow up")
-        #expect(json["stream"] as? Bool == false)
+        #expect(json["stream"] == nil)
     }
 
-    @Test("returns tool call parts with input and output")
-    func sendMessageToolCalls() async throws {
-        mockClient.respondWithRawJSON("""
-        {
-            "data": {
-                "id": "msg-1",
-                "role": "assistant",
-                "parts": [
-                    {"type": "tool-call", "toolCallId": "call-1", "toolName": "my_tool", "input": {"key": "val"}},
-                    {"type": "tool-result", "toolCallId": "call-1", "toolName": "my_tool", "output": {"result": "ok"}}
-                ],
-                "metadata": {
-                    "conversationId": "conv-1",
-                    "userMessageId": "user-msg-1",
-                    "userId": null,
-                    "finishReason": "tool-calls",
-                    "usage": {"credits": 2}
-                }
-            }
-        }
-        """)
+    @Test("sendMessage surfaces tool-calls finish reason (parts not materialized)")
+    func sendMessageToolCallsFinish() async throws {
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
+            "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"call-1\",\"toolName\":\"my_tool\",\"input\":{\"key\":\"val\"}}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"messageId\":\"msg-1\",\"userMessageId\":\"user-msg-1\",\"userId\":null,\"finishReason\":\"tool-calls\",\"usage\":{\"credits\":2}}}",
+            "data: [DONE]"
+        ])
 
         let response = try await service.sendMessage("Do something")
-
         #expect(response.finishReason == .toolCalls)
-        await #expect(response.message.parts.count == 2)
-
-        guard case .toolCall(let id, let name, let input) = await response.message.parts[0].kind else {
-            Issue.record("Expected tool-call part"); return
-        }
-        #expect(id == "call-1")
-        #expect(name == "my_tool")
-        #expect(input["key"] == .string("val"))
-
-        guard case .toolResult(let rid, let rname, let output) = await response.message.parts[1].kind else {
-            Issue.record("Expected tool-result part"); return
-        }
-        #expect(rid == "call-1")
-        #expect(rname == "my_tool")
-        #expect(output["result"] == .string("ok"))
+        #expect(response.conversationId == "conv-1")
     }
 
-    @Test("returns empty text and no parts when parts array is empty")
-    func sendMessageEmptyParts() async throws {
-        mockClient.respondWithRawJSON("""
-        {
-            "data": {
-                "id": "msg-1",
-                "role": "assistant",
-                "parts": [],
-                "metadata": {
-                    "conversationId": "conv-1",
-                    "userMessageId": null,
-                    "userId": null,
-                    "finishReason": "stop",
-                    "usage": {"credits": 0}
-                }
-            }
-        }
-        """)
+    @Test("sendMessage returns empty text when no text deltas are emitted")
+    func sendMessageNoText() async throws {
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"messageId\":\"msg-1\",\"userMessageId\":null,\"userId\":null,\"finishReason\":\"stop\",\"usage\":{\"credits\":0}}}",
+            "data: [DONE]"
+        ])
 
         let response = try await service.sendMessage("Hi")
-
         await #expect(response.message.text == "")
-        await #expect(response.message.parts.isEmpty)
         #expect(response.finishReason == .stop)
     }
 
@@ -260,7 +198,7 @@ struct ChatServiceTests {
         let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
         #expect(json["message"] == nil || json["message"] is NSNull)
         #expect(json["conversationId"] as? String == "conv-1")
-        #expect(json["stream"] as? Bool == true)
+        #expect(json["stream"] == nil)
     }
 
     // MARK: - submitToolResult
@@ -349,6 +287,39 @@ struct ChatServiceTests {
         await #expect(response.data[0].status == .ongoing)
         #expect(response.hasMore == true)
         #expect(response.total == 42)
+    }
+
+    @Test("URLSessionClient streaming session uses configured timeout")
+    func streamingTimeoutConfigurable() {
+        let client = URLSessionClient(streamIdleTimeout: 120)
+        #expect(client.streamSessionTimeout == 120)
+
+        let defaultClient = URLSessionClient()
+        #expect(defaultClient.streamSessionTimeout == 300)
+    }
+
+    @Test("conversations decode epoch-ms timestamps as Date")
+    func conversationsEpochMsTimestamps() async throws {
+        // 1704067200000 ms = 2024-01-01T00:00:00Z
+        mockClient.respondWithRawJSON("""
+        {
+          "data": [{
+            "id": "c-1",
+            "title": null,
+            "createdAt": 1704067200000,
+            "updatedAt": 1704067200000,
+            "userId": null,
+            "status": "ongoing"
+          }],
+          "pagination": {"cursor": null, "hasMore": false, "total": 1}
+        }
+        """)
+
+        let page = try await service.listConversations()
+        let first = try #require(page.data.first)
+        let expected = Date(timeIntervalSince1970: 1704067200)
+        #expect(abs(first.createdAt.timeIntervalSince(expected)) < 0.001)
+        #expect(abs(first.updatedAt.timeIntervalSince(expected)) < 0.001)
     }
 
     @Test("passes cursor and limit as query params")
@@ -489,7 +460,7 @@ struct ChatServiceTests {
             agentId: "test-agent",
             baseURL: "https://test.api.com/v2",
             deviceId: "test-device",
-            auth: .identified(token: "jwt-abc")
+            auth: .identified(token: "jwt-abc", userId: "user-1")
         )
 
         mockClient.respondWithRawJSON("""
@@ -514,12 +485,12 @@ struct ChatServiceTests {
         )
 
         mockClient.respondWithRawJSON("""
-        {"data": {"ok": true}}
+        {"data": {"userId": "user-xyz"}}
         """)
 
         try await svc.verify(token: "jwt-xyz")
 
-        #expect(svc.authState == .identified(token: "jwt-xyz"))
+        #expect(svc.authState == .identified(token: "jwt-xyz", userId: "user-xyz"))
 
         #expect(mockClient.lastRequest?.httpMethod == "POST")
         #expect(mockClient.lastRequest?.url?.path.hasSuffix("/agents/test-agent/verify") == true)
@@ -528,6 +499,29 @@ struct ChatServiceTests {
         let body = try #require(mockClient.lastRequest?.httpBody)
         let decoded = try JSONDecoder().decode([String: String].self, from: body)
         #expect(decoded["token"] == "jwt-xyz")
+    }
+
+    @Test("verify throws when userId is missing")
+    func verifyThrowsMissingUserId() async throws {
+        let svc = ChatService(
+            client: mockClient,
+            agentId: "test-agent",
+            baseURL: "https://test.api.com/v2",
+            deviceId: "test-device"
+        )
+
+        mockClient.respondWithRawJSON("""
+        {"data": {}}
+        """)
+
+        do {
+            try await svc.verify(token: "jwt-abc")
+            Issue.record("Expected verifyResponseMissingUserId")
+        } catch ChatError.verifyResponseMissingUserId {
+            // expected
+        }
+
+        #expect(svc.authState == .anonymous)
     }
 
     @Test("verify 401 leaves auth state anonymous and surfaces status code")

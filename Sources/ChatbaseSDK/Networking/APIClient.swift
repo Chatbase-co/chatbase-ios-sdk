@@ -56,8 +56,16 @@ public enum APIError: Error, LocalizedError {
 
 public struct URLSessionClient: APIClient, Sendable {
     private let decoder = JSONDecoder()
+    private let streamSession: URLSession
+    public let streamSessionTimeout: TimeInterval
 
-    public init() {}
+    public init(streamIdleTimeout: TimeInterval = 300) {
+        self.streamSessionTimeout = streamIdleTimeout
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = streamIdleTimeout
+        config.timeoutIntervalForResource = 60 * 60
+        self.streamSession = URLSession(configuration: config)
+    }
 
     public func send<T: Decodable>(request: URLRequest) async throws -> T {
         logRequest(request)
@@ -95,7 +103,7 @@ public struct URLSessionClient: APIClient, Sendable {
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (bytes, response) = try await URLSession.shared.bytes(for: request)
+            (bytes, response) = try await streamSession.bytes(for: request)
         } catch {
             logNetworkError(request, error: error, duration: ContinuousClock.now - start)
             throw APIError.networkError(error)

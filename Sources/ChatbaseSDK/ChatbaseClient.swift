@@ -178,9 +178,24 @@ public final class ChatStream: AsyncSequence, Sendable {
 
 public final class ChatbaseClient: @unchecked Sendable {
     public let service: ChatService
+    public let toolRegistry = ToolRegistry()
 
-    public init(agentId: String, baseURL: String = "https://www.chatbase.co/api/sdk") {
+    @discardableResult
+    public func registerTool(_ name: String,
+                             handler: @escaping ToolHandler) async -> ChatbaseClient {
+        await toolRegistry.register(name, handler: handler)
+        return self
+    }
+
+    public func unregisterTool(_ name: String) async {
+        await toolRegistry.unregister(name)
+    }
+
+    public init(agentId: String,
+                baseURL: String = "https://www.chatbase.co/api/sdk",
+                streamIdleTimeout: TimeInterval = 300) {
         self.service = ChatService(
+            client: URLSessionClient(streamIdleTimeout: streamIdleTimeout),
             agentId: agentId,
             baseURL: baseURL,
             deviceId: DeviceId.get(),
@@ -195,6 +210,16 @@ public final class ChatbaseClient: @unchecked Sendable {
     public var deviceId: String { service.deviceId }
 
     public var authState: AuthState { service.authState }
+
+    public var currentUserId: String? {
+        if case .identified(_, let userId) = service.authState { return userId }
+        return nil
+    }
+
+    public var isIdentified: Bool {
+        if case .identified = service.authState { return true }
+        return false
+    }
 
     public func identify(token: String) async throws {
         try await service.verify(token: token)
@@ -220,7 +245,7 @@ public final class ChatbaseClient: @unchecked Sendable {
         )
     }
 
-    public func retry(conversationId: String, messageId: String) -> ChatStream {
+    public func retryStream(conversationId: String, messageId: String) -> ChatStream {
         ChatStream(
             rawStream: service.retryMessage(conversationId: conversationId, messageId: messageId),
             conversationId: conversationId,
@@ -228,8 +253,12 @@ public final class ChatbaseClient: @unchecked Sendable {
         )
     }
 
+    public func retryMessage(conversationId: String, messageId: String) async throws -> ChatResponse {
+        try await service.retry(conversationId: conversationId, messageId: messageId, registry: toolRegistry)
+    }
+
     public func send(_ message: String, conversationId: String? = nil) async throws -> ChatResponse {
-        try await service.sendMessage(message, conversationId: conversationId)
+        try await service.sendMessage(message, conversationId: conversationId, registry: toolRegistry)
     }
 
     public func listConversations(cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Conversation> {

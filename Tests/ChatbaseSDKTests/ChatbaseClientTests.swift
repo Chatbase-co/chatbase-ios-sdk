@@ -100,7 +100,9 @@ struct ChatbaseClientTests {
             }
         }
 
-        // Stream request + submit request = 2
+        // Stream request + submit request = 2. (Continuation /chat is run by the
+        // blocking send() path, not by the raw stream — consumers of stream() drive
+        // continuation manually via client.continue(conversationId:).)
         #expect(mockClient.requestCount == 2)
     }
 
@@ -279,24 +281,14 @@ struct ChatbaseClientTests {
 
     // MARK: - Non-streaming
 
-    @Test("send returns full ChatResponse")
+    @Test("send returns full ChatResponse (collected from SSE)")
     func sendMessage() async throws {
-        mockClient.respondWithRawJSON("""
-        {
-            "data": {
-                "id": "msg-1",
-                "role": "assistant",
-                "parts": [{"type": "text", "text": "Hello!"}],
-                "metadata": {
-                    "conversationId": "conv-1",
-                    "userMessageId": "user-1",
-                    "userId": null,
-                    "finishReason": "stop",
-                    "usage": {"credits": 1}
-                }
-            }
-        }
-        """)
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
+            "data: {\"type\":\"text-delta\",\"delta\":\"Hello!\"}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"messageId\":\"msg-1\",\"userMessageId\":\"user-1\",\"userId\":null,\"finishReason\":\"stop\",\"usage\":{\"credits\":1}}}",
+            "data: [DONE]"
+        ])
 
         let response = try await client.send("Hi")
 
@@ -336,12 +328,14 @@ struct ChatbaseClientTests {
         let c = client
 
         mockClient.respondWithRawJSON("""
-        {"data": {"ok": true}}
+        {"data": {"userId": "user-xyz"}}
         """)
 
         try await c.identify(token: "jwt-xyz")
 
-        #expect(c.authState == .identified(token: "jwt-xyz"))
+        #expect(c.authState == .identified(token: "jwt-xyz", userId: "user-xyz"))
+        #expect(c.currentUserId == "user-xyz")
+        #expect(c.isIdentified == true)
     }
 
     @Test("logout returns to anonymous")
@@ -351,12 +345,14 @@ struct ChatbaseClientTests {
             agentId: "test-agent",
             baseURL: "https://test.api.com/v2",
             deviceId: "test-device",
-            auth: .identified(token: "jwt")
+            auth: .identified(token: "jwt", userId: "user-1")
         )
         let c = ChatbaseClient(service: svc)
 
-        #expect(c.authState == .identified(token: "jwt"))
+        #expect(c.authState == .identified(token: "jwt", userId: "user-1"))
         c.logout()
         #expect(c.authState == .anonymous)
+        #expect(c.currentUserId == nil)
+        #expect(c.isIdentified == false)
     }
 }

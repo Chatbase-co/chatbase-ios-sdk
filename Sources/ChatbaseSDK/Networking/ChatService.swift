@@ -62,12 +62,18 @@ public enum ChatError: Error, LocalizedError {
     case noContent
     case decodingFailed(String)
     case invalidURL(String)
+    case verifyResponseMissingUserId
+    case toolLoopExceeded(limit: Int)
+    case toolHandlerMissing(name: String)
 
     public var errorDescription: String? {
         switch self {
         case .noContent: return "No content in response"
         case .decodingFailed(let detail): return "Failed to decode response: \(detail)"
         case .invalidURL(let url): return "Invalid URL: \(url)"
+        case .verifyResponseMissingUserId: return "Verify response missing data.userId"
+        case .toolLoopExceeded(let limit): return "Tool loop exceeded \(limit) iterations"
+        case .toolHandlerMissing(let name): return "No handler registered for tool '\(name)'"
         }
     }
 }
@@ -117,8 +123,8 @@ enum MessagePartDTO: Decodable {
 struct ConversationDTO: Decodable {
     let id: String
     let title: String?
-    let createdAt: Double
-    let updatedAt: Double
+    let createdAt: Int64
+    let updatedAt: Int64
     let userId: String?
     let status: String
 }
@@ -127,7 +133,7 @@ struct ConversationMessageDTO: Decodable {
     let id: String
     let role: String
     let parts: [MessagePartDTO]
-    let createdAt: Double?
+    let createdAt: Int64?
     let feedback: String?
     let metadata: ConversationMessageMetadataDTO?
 }
@@ -218,7 +224,7 @@ public final class ChatService: @unchecked Sendable {
             id: dto.id,
             text: text,
             sender: dto.role == "user" ? .user : .agent,
-            date: dto.createdAt.map { Date(timeIntervalSince1970: $0) } ?? .now,
+            date: dto.createdAt.map { Date(timeIntervalSince1970: Double($0) / 1000) } ?? .now,
             feedback: dto.feedback.flatMap { MessageFeedback(rawValue: $0) },
             score: dto.metadata?.score,
             parts: mapParts(dto.parts)
@@ -229,8 +235,8 @@ public final class ChatService: @unchecked Sendable {
         Conversation(
             id: dto.id,
             title: dto.title,
-            createdAt: Date(timeIntervalSince1970: dto.createdAt),
-            updatedAt: Date(timeIntervalSince1970: dto.updatedAt),
+            createdAt: Date(timeIntervalSince1970: Double(dto.createdAt) / 1000),
+            updatedAt: Date(timeIntervalSince1970: Double(dto.updatedAt) / 1000),
             userId: dto.userId,
             status: ConversationStatus(rawValue: dto.status) ?? .ongoing
         )
@@ -238,13 +244,13 @@ public final class ChatService: @unchecked Sendable {
 
     // MARK: - Request Builders
 
-    func buildChatRequest(message: String? = nil, conversationId: String? = nil, stream: Bool) throws -> URLRequest {
+    func buildChatRequest(message: String? = nil, conversationId: String? = nil) throws -> URLRequest {
         var request = URLRequest(url: try url("/agents/\(agentId)/chat"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyAuthHeaders(&request)
         request.httpBody = try JSONEncoder().encode(
-            ChatRequestDTO(message: message, conversationId: conversationId, stream: stream)
+            ChatRequestDTO(message: message, conversationId: conversationId)
         )
         return request
     }
@@ -282,7 +288,7 @@ public final class ChatService: @unchecked Sendable {
     func applyAuthHeaders(_ request: inout URLRequest) {
         request.setValue(sdkUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(deviceId, forHTTPHeaderField: "X-Device-Id")
-        if case .identified(let token) = authState {
+        if case .identified(let token, _) = authState {
             request.setValue(token, forHTTPHeaderField: "X-User-Token")
         }
     }
@@ -300,16 +306,14 @@ public final class ChatService: @unchecked Sendable {
 private struct ChatRequestDTO: Encodable {
     let message: String?
     let conversationId: String?
-    let stream: Bool
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(message, forKey: .message)
         try container.encodeIfPresent(conversationId, forKey: .conversationId)
-        try container.encode(stream, forKey: .stream)
     }
 
     enum CodingKeys: String, CodingKey {
-        case message, conversationId, stream
+        case message, conversationId
     }
 }

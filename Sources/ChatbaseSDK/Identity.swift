@@ -5,21 +5,29 @@ private let identityLogger = Logger(subsystem: "com.chatbase.sdk", category: "Id
 
 // MARK: - Device ID
 
-/// Stable per-install device identifier persisted to UserDefaults.
+/// Testable resolver for the device id with Keychain + legacy UserDefaults fallback.
+enum DeviceIdResolver {
+    static func resolve(
+        defaults: UserDefaults = .standard,
+        keychainAccount: String = "deviceId",
+        legacyKey: String = "com.chatbase.sdk.deviceId"
+    ) -> String {
+        if let kc = Keychain.get(account: keychainAccount) { return kc }
+        if let legacy = defaults.string(forKey: legacyKey) {
+            Keychain.set(legacy, account: keychainAccount)
+            return legacy
+        }
+        let fresh = UUID().uuidString
+        Keychain.set(fresh, account: keychainAccount)
+        return fresh
+    }
+}
+
+/// Stable per-install device identifier, persisted to Keychain (migrating from legacy UserDefaults on first launch).
 public enum DeviceId {
-    private static let storageKey = "com.chatbase.sdk.deviceId"
-
     // Swift guarantees static stored property initializers run exactly once,
-    // atomically, across threads. This removes the read-then-write TOCTOU
-    // on cold start without introducing a lock.
-    private static let value: String = {
-        let defaults = UserDefaults.standard
-        if let cached = defaults.string(forKey: storageKey) { return cached }
-        let id = UUID().uuidString
-        defaults.set(id, forKey: storageKey)
-        return id
-    }()
-
+    // atomically, across threads.
+    private static let value: String = DeviceIdResolver.resolve()
     public static func get() -> String { value }
 }
 
@@ -71,10 +79,10 @@ enum Keychain {
 
 // MARK: - Auth State
 
-/// Session auth state. Anonymous = device-id only; identified = verified JWT.
+/// Session auth state. Anonymous = device-id only; identified = verified JWT + userId.
 public enum AuthState: Sendable, Equatable {
     case anonymous
-    case identified(token: String)
+    case identified(token: String, userId: String)
 }
 
 // MARK: - Identity persistence
@@ -82,18 +90,24 @@ public enum AuthState: Sendable, Equatable {
 /// Keychain-backed store for the identified session. Anonymous = nothing persisted.
 enum Identity {
     private static let tokenAccount = "userToken"
+    private static let userIdAccount = "userId"
 
     static func load() -> AuthState {
-        guard let token = Keychain.get(account: tokenAccount) else { return .anonymous }
-        return .identified(token: token)
+        guard
+            let token = Keychain.get(account: tokenAccount),
+            let userId = Keychain.get(account: userIdAccount)
+        else { return .anonymous }
+        return .identified(token: token, userId: userId)
     }
 
     static func save(_ state: AuthState) {
         switch state {
         case .anonymous:
             Keychain.delete(account: tokenAccount)
-        case .identified(let token):
+            Keychain.delete(account: userIdAccount)
+        case .identified(let token, let userId):
             Keychain.set(token, account: tokenAccount)
+            Keychain.set(userId, account: userIdAccount)
         }
     }
 }
