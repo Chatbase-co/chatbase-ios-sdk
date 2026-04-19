@@ -62,12 +62,14 @@ public enum ChatError: Error, LocalizedError {
     case noContent
     case decodingFailed(String)
     case invalidURL(String)
+    case toolLoopLimitExceeded(limit: Int)
 
     public var errorDescription: String? {
         switch self {
         case .noContent: return "No content in response"
         case .decodingFailed(let detail): return "Failed to decode response: \(detail)"
         case .invalidURL(let url): return "Invalid URL: \(url)"
+        case .toolLoopLimitExceeded(let limit): return "Tool loop exceeded \(limit) steps"
         }
     }
 }
@@ -144,16 +146,19 @@ struct PaginationDTO: Decodable {
 
 // MARK: - ChatService
 
-public final class ChatService: @unchecked Sendable {
+final class ChatService: @unchecked Sendable {
     let client: APIClient
     let baseURL: String
     let agentId: String
-    public let deviceId: String
+    let deviceId: String
+    let encoder = JSONEncoder()
 
     private let lock = NSLock()
     private var auth: AuthState
+    private var _currentConversationId: String?
+    private var _currentUserId: String?
 
-    public init(
+    init(
         client: APIClient = URLSessionClient(),
         agentId: String,
         baseURL: String = "https://www.chatbase.co/api/sdk",
@@ -169,7 +174,7 @@ public final class ChatService: @unchecked Sendable {
 
     // MARK: - Auth state
 
-    public var authState: AuthState {
+    var authState: AuthState {
         lock.lock(); defer { lock.unlock() }
         return auth
     }
@@ -177,8 +182,32 @@ public final class ChatService: @unchecked Sendable {
     func updateAuth(_ newState: AuthState) {
         lock.lock()
         self.auth = newState
+        self._currentUserId = nil
+        self._currentConversationId = nil
         lock.unlock()
         Identity.save(newState)
+    }
+
+    // MARK: - Session state
+
+    var currentConversationId: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _currentConversationId
+    }
+
+    var currentUserId: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _currentUserId
+    }
+
+    func updateCurrentConversation(_ id: String?) {
+        lock.lock(); defer { lock.unlock() }
+        _currentConversationId = id
+    }
+
+    func updateCurrentUser(_ id: String?) {
+        lock.lock(); defer { lock.unlock() }
+        _currentUserId = id
     }
 
     // MARK: - Internal Helpers
@@ -203,20 +232,20 @@ public final class ChatService: @unchecked Sendable {
         dtos.map { dto in
             switch dto {
             case .text(let text):
-                return MessagePart(kind: .text(text))
+                return .text(text)
             case .toolCall(let id, let name, let input):
-                return MessagePart(kind: .toolCall(toolCallId: id, toolName: name, input: input))
+                return .toolCall(toolCallId: id, toolName: name, input: input)
             case .toolResult(let id, let name, let output):
-                return MessagePart(kind: .toolResult(toolCallId: id, toolName: name, output: output))
+                return .toolResult(toolCallId: id, toolName: name, output: output)
             }
         }
     }
 
     func mapMessage(_ dto: ConversationMessageDTO) -> Message? {
-        guard let text = extractText(from: dto.parts) else { return nil }
+        guard !dto.parts.isEmpty else { return nil }
         return Message(
             id: dto.id,
-            text: text,
+            text: extractText(from: dto.parts) ?? "",
             sender: dto.role == "user" ? .user : .agent,
             date: dto.createdAt.map { Date(timeIntervalSince1970: $0) } ?? .now,
             feedback: dto.feedback.flatMap { MessageFeedback(rawValue: $0) },
@@ -243,7 +272,7 @@ public final class ChatService: @unchecked Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyAuthHeaders(&request)
-        request.httpBody = try JSONEncoder().encode(
+        request.httpBody = try encoder.encode(
             ChatRequestDTO(message: message, conversationId: conversationId, stream: stream)
         )
         return request
@@ -254,7 +283,7 @@ public final class ChatService: @unchecked Sendable {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyAuthHeaders(&request)
-        request.httpBody = try JSONEncoder().encode(body)
+        request.httpBody = try encoder.encode(body)
         return request
     }
 

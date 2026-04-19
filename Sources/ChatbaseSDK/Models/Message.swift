@@ -18,15 +18,10 @@ public struct Usage: Sendable {
     public init(credits: Double) { self.credits = credits }
 }
 
-public struct MessagePart: Sendable {
-    public enum Kind: Sendable {
-        case text(String)
-        case toolCall(toolCallId: String, toolName: String, input: JSONValue)
-        case toolResult(toolCallId: String, toolName: String, output: JSONValue)
-    }
-
-    public let kind: Kind
-    public init(kind: Kind) { self.kind = kind }
+public enum MessagePart: Sendable {
+    case text(String)
+    case toolCall(toolCallId: String, toolName: String, input: JSONValue)
+    case toolResult(toolCallId: String, toolName: String, output: JSONValue)
 }
 
 public struct Message: Identifiable, Sendable {

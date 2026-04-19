@@ -6,7 +6,7 @@ extension ChatService {
 
     // MARK: - Tool Results
 
-    public func submitToolResult(conversationId: String, toolCall: ToolCall, output: JSONValue, maxRetries: Int = 3) async throws {
+    func submitToolResult(conversationId: String, toolCall: ToolCall, output: JSONValue, maxRetries: Int = 3) async throws {
         let request = try buildJSONRequest(
             method: "POST",
             path: "/agents/\(agentId)/conversations/\(conversationId)/tool-result",
@@ -37,7 +37,7 @@ extension ChatService {
 
     // MARK: - Retry
 
-    public func retryMessage(conversationId: String, messageId: String) -> AsyncThrowingStream<StreamEvent, Error> {
+    func retryMessage(conversationId: String, messageId: String) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
             let request = try buildJSONRequest(
                 method: "POST",

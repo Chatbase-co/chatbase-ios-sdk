@@ -1,200 +1,39 @@
 import Foundation
-import os
-
-private let logger = Logger(subsystem: "com.chatbase.sdk", category: "ChatbaseClient")
-
-// MARK: - ToolCallHandle
-
-public enum ToolCallStatus: Sendable {
-    case pending
-    case resolved
-    case failed
-    case ignored
-    case submissionError(Error)
-
-    public static func == (lhs: ToolCallStatus, rhs: ToolCallStatus) -> Bool {
-        switch (lhs, rhs) {
-        case (.pending, .pending),
-             (.resolved, .resolved),
-             (.failed, .failed),
-             (.ignored, .ignored),
-             (.submissionError, .submissionError):
-            return true
-        default:
-            return false
-        }
-    }
-}
-
-public actor ToolCallHandle {
-    public nonisolated let toolCallId: String
-    public nonisolated let toolName: String
-    public nonisolated let input: JSONValue
-    public nonisolated let conversationId: String
-
-    private let service: ChatService
-    public private(set) var status: ToolCallStatus = .pending
-    private var inFlight = false
-
-    init(toolCall: ToolCall, conversationId: String, service: ChatService) {
-        self.toolCallId = toolCall.toolCallId
-        self.toolName = toolCall.toolName
-        self.input = toolCall.input
-        self.conversationId = conversationId
-        self.service = service
-    }
-
-    private func reserve() -> Bool {
-        guard !inFlight else { return false }
-        switch status {
-        case .pending, .submissionError:
-            inFlight = true
-            return true
-        case .resolved, .failed, .ignored:
-            return false
-        }
-    }
-
-    public func resolve(_ output: [String: JSONValue] = [:]) async {
-        guard reserve() else {
-            logger.warning("ToolCall \(self.toolCallId) not pending")
-            return
-        }
-        defer { inFlight = false }
-        do {
-            try await service.submitToolResult(
-                conversationId: conversationId,
-                toolCall: ToolCall(toolCallId: toolCallId, toolName: toolName, input: input),
-                output: .object(output)
-            )
-            status = .resolved
-        } catch {
-            logger.error("Failed to submit tool result: \(error.localizedDescription)")
-            status = .submissionError(error)
-        }
-    }
-
-    public func fail(_ message: String) async {
-        guard reserve() else {
-            logger.warning("ToolCall \(self.toolCallId) not pending")
-            return
-        }
-        defer { inFlight = false }
-        do {
-            try await service.submitToolResult(
-                conversationId: conversationId,
-                toolCall: ToolCall(toolCallId: toolCallId, toolName: toolName, input: input),
-                output: .object(["error": .string(message)])
-            )
-            status = .failed
-        } catch {
-            logger.error("Failed to submit tool error: \(error.localizedDescription)")
-            status = .submissionError(error)
-        }
-    }
-
-    public func ignore() {
-        guard reserve() else {
-            logger.warning("ToolCall \(self.toolCallId) not pending")
-            return
-        }
-        defer { inFlight = false }
-        status = .ignored
-    }
-}
-
-// MARK: - ChatEvent
-
-public enum ChatEvent: Sendable {
-    case messageStarted(id: String)
-    case text(String)
-    case toolCall(ToolCallHandle)
-    case finished(StreamFinishInfo)
-}
-
-// MARK: - ChatStream
-
-public final class ChatStream: AsyncSequence, Sendable {
-    public typealias Element = ChatEvent
-
-    private let stream: AsyncThrowingStream<ChatEvent, Error>
-    private let task: Task<Void, Never>
-
-    public var isCancelled: Bool { task.isCancelled }
-
-    init(rawStream: AsyncThrowingStream<StreamEvent, Error>, conversationId: String?, service: ChatService) {
-        let (chatStream, continuation) = AsyncThrowingStream<ChatEvent, Error>.makeStream()
-        self.stream = chatStream
-        let initialConvId = conversationId
-
-        self.task = Task { @Sendable in
-            // Tool calls arrive before the finish event that carries conversationId for first-turn streams.
-            // Buffer them until finish resolves the id, then emit just before finish.
-            var pendingToolCalls: [ToolCall] = []
-
-            do {
-                for try await event in rawStream {
-                    switch event {
-                    case .messageStarted(let id):
-                        continuation.yield(.messageStarted(id: id))
-                    case .textChunk(let chunk):
-                        continuation.yield(.text(chunk))
-                    case .toolCall(let toolCall):
-                        pendingToolCalls.append(toolCall)
-                    case .finished(let info):
-                        let resolvedConvId = info.conversationId ?? initialConvId
-                        if let cid = resolvedConvId, !cid.isEmpty {
-                            for tc in pendingToolCalls {
-                                continuation.yield(.toolCall(ToolCallHandle(
-                                    toolCall: tc,
-                                    conversationId: cid,
-                                    service: service
-                                )))
-                            }
-                        } else if !pendingToolCalls.isEmpty {
-                            logger.error("Dropped \(pendingToolCalls.count) tool calls: no conversationId available")
-                        }
-                        pendingToolCalls.removeAll()
-                        continuation.yield(.finished(info))
-                    }
-                }
-                continuation.finish()
-            } catch {
-                continuation.finish(throwing: error)
-            }
-        }
-    }
-
-    public func cancel() {
-        task.cancel()
-    }
-
-    public func makeAsyncIterator() -> AsyncThrowingStream<ChatEvent, Error>.AsyncIterator {
-        stream.makeAsyncIterator()
-    }
-}
-
-// MARK: - ChatbaseClient
 
 public final class ChatbaseClient: @unchecked Sendable {
-    public let service: ChatService
+    let service: ChatService
+    let maxToolLoopSteps: Int
+    private let toolRegistry = ToolRegistry()
 
-    public init(agentId: String, baseURL: String = "https://www.chatbase.co/api/sdk") {
+    public init(
+        agentId: String,
+        baseURL: String = "https://www.chatbase.co/api/sdk",
+        configuration: URLSessionConfiguration = .default,
+        maxToolLoopSteps: Int = 10
+    ) {
         self.service = ChatService(
+            client: URLSessionClient(configuration: configuration),
             agentId: agentId,
             baseURL: baseURL,
             deviceId: DeviceId.get(),
             auth: Identity.load()
         )
+        self.maxToolLoopSteps = maxToolLoopSteps
     }
 
-    public init(service: ChatService) {
+    init(service: ChatService, maxToolLoopSteps: Int = 10) {
         self.service = service
+        self.maxToolLoopSteps = maxToolLoopSteps
     }
 
     public var deviceId: String { service.deviceId }
-
     public var authState: AuthState { service.authState }
+    public var currentConversationId: String? { service.currentConversationId }
+    public var currentUserId: String? { service.currentUserId }
+
+    public func newConversation() {
+        service.updateCurrentConversation(nil)
+    }
 
     public func identify(token: String) async throws {
         try await service.verify(token: token)
@@ -204,33 +43,60 @@ public final class ChatbaseClient: @unchecked Sendable {
         service.updateAuth(.anonymous)
     }
 
-    public func stream(_ message: String, conversationId: String? = nil) -> ChatStream {
-        ChatStream(
-            rawStream: service.streamMessage(message, conversationId: conversationId),
-            conversationId: conversationId,
-            service: service
+    // MARK: - Tools
+
+    /// Register a tool handler. When the agent invokes `name` during `send(...)`,
+    /// the handler runs, its output is submitted, and the stream resumes — all
+    /// inside a single `send` call. Handlers are async and may suspend on UI
+    /// (e.g. awaiting a user selection) before returning output.
+    public func tool(_ name: String, handler: @escaping ToolHandler) {
+        toolRegistry.register(name, handler: handler)
+    }
+
+    // MARK: - Send
+
+    /// Send a message and stream the response, automatically running registered
+    /// tools and continuing the conversation until a non-tool-call finish.
+    ///
+    /// `conversationId: nil` always starts a new conversation. For session
+    /// continuity across sends, hold a `ConversationState` (recommended) or
+    /// pass `client.currentConversationId` explicitly.
+    ///
+    /// Unknown tools (no handler registered) are resolved with an error payload
+    /// so the agent can recover rather than hang.
+    public func send(
+        _ message: String,
+        conversationId: String? = nil,
+        configure: @Sendable (inout StreamCallbacks) -> Void = { _ in }
+    ) async throws -> ChatResponse {
+        try await runAutoLoop(
+            firstStream: { self.service.streamMessage(message, conversationId: conversationId) },
+            initialConversationId: conversationId,
+            configure: configure
         )
     }
 
-    public func `continue`(conversationId: String) -> ChatStream {
-        ChatStream(
-            rawStream: service.continueConversation(conversationId),
-            conversationId: conversationId,
-            service: service
+    /// Retry an assistant message with the auto tool loop.
+    public func retry(
+        conversationId: String,
+        messageId: String,
+        configure: @Sendable (inout StreamCallbacks) -> Void = { _ in }
+    ) async throws -> ChatResponse {
+        try await runAutoLoop(
+            firstStream: { self.service.retryMessage(conversationId: conversationId, messageId: messageId) },
+            initialConversationId: conversationId,
+            configure: configure
         )
     }
 
-    public func retry(conversationId: String, messageId: String) -> ChatStream {
-        ChatStream(
-            rawStream: service.retryMessage(conversationId: conversationId, messageId: messageId),
-            conversationId: conversationId,
-            service: service
-        )
-    }
-
-    public func send(_ message: String, conversationId: String? = nil) async throws -> ChatResponse {
+    /// POST /chat without streaming and without the tool loop. Returns the full
+    /// agent reply in one shot. Use when you don't need per-delta UI updates
+    /// and don't need registered tools to run.
+    public func sendNonStreaming(_ message: String, conversationId: String? = nil) async throws -> ChatResponse {
         try await service.sendMessage(message, conversationId: conversationId)
     }
+
+    // MARK: - Conversations
 
     public func listConversations(cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Conversation> {
         try await service.listConversations(cursor: cursor, limit: limit)
@@ -238,5 +104,105 @@ public final class ChatbaseClient: @unchecked Sendable {
 
     public func listMessages(conversationId: String, cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Message> {
         try await service.listMessages(conversationId: conversationId, cursor: cursor, limit: limit)
+    }
+
+    // MARK: - Auto tool-loop
+
+    private func runAutoLoop(
+        firstStream: () -> AsyncThrowingStream<StreamEvent, Error>,
+        initialConversationId: String?,
+        configure: @Sendable (inout StreamCallbacks) -> Void
+    ) async throws -> ChatResponse {
+        var callbacks = StreamCallbacks()
+        configure(&callbacks)
+
+        var currentConvId = initialConversationId
+        var isFirstTurn = true
+        var accumulatedText = ""
+        var lastMessageId: String?
+        var lastFinish: StreamFinishInfo?
+        var userMessageId: String?
+        var steps = 0
+
+        while true {
+            if steps >= maxToolLoopSteps { throw ChatError.toolLoopLimitExceeded(limit: maxToolLoopSteps) }
+            steps += 1
+
+            let rawStream: AsyncThrowingStream<StreamEvent, Error>
+            if isFirstTurn {
+                rawStream = firstStream()
+                isFirstTurn = false
+            } else {
+                // currentConvId is guaranteed non-nil here: the guard below
+                // breaks the loop if it was missing after the first turn.
+                rawStream = service.continueConversation(currentConvId!)
+            }
+
+            // Buffer tool calls until finish event resolves conversationId
+            // (required for first-turn streams where the id isn't known yet).
+            var pendingToolCalls: [ToolCall] = []
+
+            for try await event in rawStream {
+                switch event {
+                case .messageStarted(let id):
+                    lastMessageId = id
+                case .textChunk(let chunk):
+                    accumulatedText += chunk
+                    await callbacks.onTextDelta?(chunk)
+                case .toolCall(let tc):
+                    pendingToolCalls.append(tc)
+                case .finished(let info):
+                    lastFinish = info
+                    if let cid = info.conversationId { currentConvId = cid }
+                    if let umid = info.userMessageId { userMessageId = umid }
+                }
+            }
+
+            guard !pendingToolCalls.isEmpty else { break }
+
+            guard let convIdForTools = currentConvId, !convIdForTools.isEmpty else {
+                throw ChatError.noContent
+            }
+
+            for tc in pendingToolCalls {
+                await callbacks.onToolCall?(ToolCallInfo(toolCallId: tc.toolCallId, toolName: tc.toolName, input: tc.input))
+                let output = try await runTool(name: tc.toolName, input: tc.input)
+                try await service.submitToolResult(conversationId: convIdForTools, toolCall: tc, output: output)
+                await callbacks.onToolResult?(ToolResultInfo(toolCallId: tc.toolCallId, toolName: tc.toolName, output: output))
+            }
+        }
+
+        if let cid = currentConvId, !cid.isEmpty {
+            service.updateCurrentConversation(cid)
+        }
+        if let uid = lastFinish?.userId {
+            service.updateCurrentUser(uid)
+        }
+
+        return ChatResponse(
+            message: Message(
+                id: lastFinish?.messageId ?? lastMessageId ?? "",
+                text: accumulatedText,
+                sender: .agent,
+                date: .now
+            ),
+            conversationId: currentConvId ?? "",
+            userMessageId: userMessageId,
+            finishReason: lastFinish?.finishReason ?? .stop,
+            usage: lastFinish?.usage ?? Usage(credits: 0)
+        )
+    }
+
+    private func runTool(name: String, input: JSONValue) async throws -> JSONValue {
+        guard let handler = toolRegistry.get(name) else {
+            return .object(["error": .string("No handler registered for tool '\(name)'")])
+        }
+        do {
+            return try await handler(input)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return .object(["error": .string(error.localizedDescription)])
+        }
     }
 }

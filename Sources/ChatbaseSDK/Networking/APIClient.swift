@@ -3,21 +3,20 @@ import os
 
 private let logger = Logger(subsystem: "com.chatbase.sdk", category: "APIClient")
 
+public struct StreamResponse: Sendable {
+    public let bytes: URLSession.AsyncBytes
+    public let response: HTTPURLResponse
+}
+
 public protocol APIClient: Sendable {
     func send<T: Decodable>(request: URLRequest) async throws -> T
-    func streamLines(request: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse)
+    func streamLines(request: URLRequest) async throws -> StreamResponse
 }
 
 public struct APIErrorDetail: Decodable, Sendable {
     public let code: String
     public let message: String
     public let details: [String: String]?
-
-    public init(code: String, message: String, details: [String: String]?) {
-        self.code = code
-        self.message = message
-        self.details = details
-    }
 }
 
 struct APIErrorResponse: Decodable {
@@ -54,10 +53,17 @@ public enum APIError: Error, LocalizedError {
     }
 }
 
-public struct URLSessionClient: APIClient, Sendable {
+public final class URLSessionClient: APIClient, @unchecked Sendable {
+    private let session: URLSession
     private let decoder = JSONDecoder()
 
-    public init() {}
+    public init(configuration: URLSessionConfiguration = .default) {
+        self.session = URLSession(configuration: configuration)
+    }
+
+    deinit {
+        session.finishTasksAndInvalidate()
+    }
 
     public func send<T: Decodable>(request: URLRequest) async throws -> T {
         logRequest(request)
@@ -66,7 +72,7 @@ public struct URLSessionClient: APIClient, Sendable {
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            (data, response) = try await session.data(for: request)
         } catch {
             logNetworkError(request, error: error, duration: ContinuousClock.now - start)
             throw APIError.networkError(error)
@@ -88,14 +94,14 @@ public struct URLSessionClient: APIClient, Sendable {
         return try decoder.decode(T.self, from: data)
     }
 
-    public func streamLines(request: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
+    public func streamLines(request: URLRequest) async throws -> StreamResponse {
         logRequest(request, isStream: true)
         let start = ContinuousClock.now
 
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (bytes, response) = try await URLSession.shared.bytes(for: request)
+            (bytes, response) = try await session.bytes(for: request)
         } catch {
             logNetworkError(request, error: error, duration: ContinuousClock.now - start)
             throw APIError.networkError(error)
@@ -118,7 +124,7 @@ public struct URLSessionClient: APIClient, Sendable {
         }
 
         logResponse(request, statusCode: httpResponse.statusCode, duration: duration, isStream: true)
-        return (bytes, httpResponse)
+        return StreamResponse(bytes: bytes, response: httpResponse)
     }
 
     private func parseHTTPError(statusCode: Int, data: Data) -> APIError {

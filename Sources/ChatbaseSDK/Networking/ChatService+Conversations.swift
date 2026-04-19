@@ -4,7 +4,7 @@ import Foundation
 
 extension ChatService {
 
-    public func listConversations(cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Conversation> {
+    func listConversations(cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Conversation> {
         let request = try buildGETRequest(path: "/agents/\(agentId)/conversations", query: paginationQuery(cursor: cursor, limit: limit))
         let response: ListConversationsResponseDTO = try await sendRequest(request)
         let nextCursor = response.pagination.cursor
@@ -18,7 +18,7 @@ extension ChatService {
         )
     }
 
-    public func listMessages(conversationId: String, cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Message> {
+    func listMessages(conversationId: String, cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Message> {
         let request = try buildGETRequest(
             path: "/agents/\(agentId)/conversations/\(conversationId)/messages",
             query: paginationQuery(cursor: cursor, limit: limit)

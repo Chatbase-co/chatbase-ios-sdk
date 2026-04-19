@@ -429,14 +429,14 @@ struct ChatServiceTests {
         #expect(response.hasMore == true)
     }
 
-    @Test("filters messages with no displayable text")
-    func listMessagesFiltersEmpty() async throws {
+    @Test("keeps tool-only messages; drops only parts-less entries")
+    func listMessagesPreservesToolParts() async throws {
         mockClient.respondWithRawJSON("""
         {
             "data": [
                 {"id": "msg-1", "role": "user", "parts": [{"type": "text", "text": "Hi"}], "createdAt": 1700000000, "feedback": null},
                 {"id": "msg-2", "role": "assistant", "parts": [{"type": "tool-call", "toolCallId": "c1", "toolName": "t1", "input": {}}], "createdAt": null, "feedback": null},
-                {"id": "msg-3", "role": "user", "parts": [{"type": "text", "text": ""}], "createdAt": 1700000002, "feedback": null},
+                {"id": "msg-3", "role": "assistant", "parts": [], "createdAt": 1700000002, "feedback": null},
                 {"id": "msg-4", "role": "assistant", "parts": [{"type": "tool-call", "toolCallId": "c1", "toolName": "t1", "input": {}}, {"type": "text", "text": "Done!"}], "createdAt": 1700000003, "feedback": null}
             ],
             "pagination": {"cursor": null, "hasMore": false, "total": 4}
@@ -445,14 +445,15 @@ struct ChatServiceTests {
 
         let response = try await service.listMessages(conversationId: "conv-1")
 
-        // msg-1: has text, kept
-        // msg-2: tool-call only, no text, filtered
-        // msg-3: empty text, filtered
+        // msg-1: text only, kept
+        // msg-2: tool-call only, kept (text "")
+        // msg-3: no parts, filtered
         // msg-4: tool-call + text, kept
-        #expect(response.data.count == 2)
-        #expect(response.data[0].id == "msg-1")
-        #expect(response.data[1].id == "msg-4")
-        #expect(response.data[1].text == "Done!")
+        #expect(response.data.count == 3)
+        #expect(response.data.map(\.id) == ["msg-1", "msg-2", "msg-4"])
+        #expect(response.data[1].text == "")
+        #expect(response.data[1].parts.count == 1)
+        #expect(response.data[2].text == "Done!")
     }
 
     // MARK: - Request validation

@@ -4,7 +4,7 @@ import Foundation
 
 extension ChatService {
 
-    public func sendMessage(_ text: String, conversationId: String? = nil) async throws -> ChatResponse {
+    func sendMessage(_ text: String, conversationId: String? = nil) async throws -> ChatResponse {
         let request = try buildChatRequest(message: text, conversationId: conversationId, stream: false)
         let response: ChatResponseDTO = try await sendRequest(request)
 
@@ -27,7 +27,7 @@ extension ChatService {
         )
     }
 
-    public func streamMessage(_ text: String, conversationId: String? = nil) -> AsyncThrowingStream<StreamEvent, Error> {
+    func streamMessage(_ text: String, conversationId: String? = nil) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
             return streamSSE(request: try buildChatRequest(message: text, conversationId: conversationId, stream: true))
         } catch {
@@ -38,7 +38,7 @@ extension ChatService {
     // MARK: - Verify
 
     /// POST /verify with the given JWT; on success, promotes the session to identified.
-    public func verify(token: String) async throws {
+    func verify(token: String) async throws {
         let request = try buildJSONRequest(
             method: "POST",
             path: "/agents/\(agentId)/verify",
@@ -49,7 +49,7 @@ extension ChatService {
         updateAuth(.identified(token: token))
     }
 
-    public func continueConversation(_ conversationId: String) -> AsyncThrowingStream<StreamEvent, Error> {
+    func continueConversation(_ conversationId: String) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
             return streamSSE(request: try buildChatRequest(message: nil, conversationId: conversationId, stream: true))
         } catch {
@@ -63,11 +63,13 @@ extension ChatService {
         let (stream, continuation) = AsyncThrowingStream<StreamEvent, Error>.makeStream()
         let client = self.client
 
-        Task { @Sendable in
+        let task = Task { @Sendable in
+            let decoder = JSONDecoder()
             do {
-                let (bytes, _) = try await client.streamLines(request: request)
+                let result = try await client.streamLines(request: request)
 
-                for try await line in bytes.lines {
+                for try await line in result.bytes.lines {
+                    try Task.checkCancellation()
                     guard line.hasPrefix("data: ") else { continue }
                     let payload = String(line.dropFirst(6))
                     if payload == "[DONE]" { break }
@@ -75,7 +77,7 @@ extension ChatService {
 
                     let event: StreamEventDTO
                     do {
-                        event = try JSONDecoder().decode(StreamEventDTO.self, from: data)
+                        event = try decoder.decode(StreamEventDTO.self, from: data)
                     } catch {
                         serviceLogger.error("Failed to decode SSE event: \(error.localizedDescription)")
                         continuation.finish(throwing: ChatError.decodingFailed(String(describing: error)))
@@ -112,6 +114,7 @@ extension ChatService {
             }
         }
 
+        continuation.onTermination = { _ in task.cancel() }
         return stream
     }
 }
