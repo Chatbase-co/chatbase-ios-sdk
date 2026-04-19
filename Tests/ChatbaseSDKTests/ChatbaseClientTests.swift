@@ -100,7 +100,9 @@ struct ChatbaseClientTests {
             }
         }
 
-        // Stream request + submit request = 2
+        // Stream request + submit request = 2. (Continuation /chat is run by the
+        // blocking send() path, not by the raw stream — consumers of stream() drive
+        // continuation manually via client.continue(conversationId:).)
         #expect(mockClient.requestCount == 2)
     }
 
@@ -279,24 +281,14 @@ struct ChatbaseClientTests {
 
     // MARK: - Non-streaming
 
-    @Test("send returns full ChatResponse")
+    @Test("send returns full ChatResponse (collected from SSE)")
     func sendMessage() async throws {
-        mockClient.respondWithRawJSON("""
-        {
-            "data": {
-                "id": "msg-1",
-                "role": "assistant",
-                "parts": [{"type": "text", "text": "Hello!"}],
-                "metadata": {
-                    "conversationId": "conv-1",
-                    "userMessageId": "user-1",
-                    "userId": null,
-                    "finishReason": "stop",
-                    "usage": {"credits": 1}
-                }
-            }
-        }
-        """)
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
+            "data: {\"type\":\"text-delta\",\"delta\":\"Hello!\"}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"messageId\":\"msg-1\",\"userMessageId\":\"user-1\",\"userId\":null,\"finishReason\":\"stop\",\"usage\":{\"credits\":1}}}",
+            "data: [DONE]"
+        ])
 
         let response = try await client.send("Hi")
 

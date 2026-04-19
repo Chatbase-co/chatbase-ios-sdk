@@ -5,31 +5,60 @@ import Foundation
 extension ChatService {
 
     public func sendMessage(_ text: String, conversationId: String? = nil) async throws -> ChatResponse {
-        let request = try buildChatRequest(message: text, conversationId: conversationId, stream: false)
-        let response: ChatResponseDTO = try await sendRequest(request)
+        try await collectStream(streamMessage(text, conversationId: conversationId))
+    }
 
-        let parts = mapParts(response.data.parts)
-        let responseText = extractText(from: response.data.parts)
-        let meta = response.data.metadata
-
+    /// Subscribes to an SSE stream, accumulates text + tool calls + finish info,
+    /// returns a terminal ChatResponse. Throws on decoding / network errors.
+    /// Tool calls that appear in the stream are silently collected here; the
+    /// auto-loop is run by `sendMessage(_:conversationId:registry:)` (Phase 4).
+    func collectStream(_ raw: AsyncThrowingStream<StreamEvent, Error>) async throws -> ChatResponse {
+        let turn = try await collectTurn(raw)
+        guard let conversationId = turn.finish.conversationId else { throw ChatError.noContent }
         return ChatResponse(
             message: Message(
-                id: response.data.id,
-                text: responseText ?? "",
+                id: turn.messageId ?? turn.finish.messageId ?? "",
+                text: turn.text,
                 sender: .agent,
                 date: .now,
-                parts: parts
+                parts: []
             ),
-            conversationId: meta.conversationId,
-            userMessageId: meta.userMessageId,
-            finishReason: FinishReason(rawValue: meta.finishReason) ?? .stop,
-            usage: Usage(credits: meta.usage.credits)
+            conversationId: conversationId,
+            userMessageId: turn.finish.userMessageId,
+            finishReason: turn.finish.finishReason ?? .stop,
+            usage: turn.finish.usage ?? Usage(credits: 0)
         )
+    }
+
+    struct CollectedTurn: Sendable {
+        let messageId: String?
+        let text: String
+        let toolCalls: [ToolCall]
+        let finish: StreamFinishInfo
+    }
+
+    func collectTurn(_ raw: AsyncThrowingStream<StreamEvent, Error>) async throws -> CollectedTurn {
+        var messageId: String?
+        var textBuffer = ""
+        var pendingToolCalls: [ToolCall] = []
+        var finish: StreamFinishInfo?
+
+        for try await event in raw {
+            switch event {
+            case .messageStarted(let id): messageId = id
+            case .textChunk(let chunk): textBuffer.append(chunk)
+            case .toolCall(let tc): pendingToolCalls.append(tc)
+            case .finished(let info): finish = info
+            }
+        }
+
+        guard let meta = finish else { throw ChatError.noContent }
+        return CollectedTurn(messageId: messageId, text: textBuffer, toolCalls: pendingToolCalls, finish: meta)
     }
 
     public func streamMessage(_ text: String, conversationId: String? = nil) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
-            return streamSSE(request: try buildChatRequest(message: text, conversationId: conversationId, stream: true))
+            return streamSSE(request: try buildChatRequest(message: text, conversationId: conversationId))
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
@@ -53,7 +82,7 @@ extension ChatService {
 
     public func continueConversation(_ conversationId: String) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
-            return streamSSE(request: try buildChatRequest(message: nil, conversationId: conversationId, stream: true))
+            return streamSSE(request: try buildChatRequest(message: nil, conversationId: conversationId))
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
@@ -127,25 +156,6 @@ struct VerifyRequestDTO: Encodable {
 struct VerifyResponseDTO: Decodable {
     struct Data: Decodable { let userId: String? }
     let data: Data
-}
-
-struct ChatResponseDTO: Decodable {
-    let data: ChatResponseDataDTO
-}
-
-struct ChatResponseDataDTO: Decodable {
-    let id: String
-    let role: String
-    let parts: [MessagePartDTO]
-    let metadata: ChatResponseMetadataDTO
-}
-
-struct ChatResponseMetadataDTO: Decodable {
-    let conversationId: String
-    let userMessageId: String?
-    let userId: String?
-    let finishReason: String
-    let usage: UsageDTO
 }
 
 // MARK: - SSE DTOs

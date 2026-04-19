@@ -63,6 +63,7 @@ public enum ChatError: Error, LocalizedError {
     case decodingFailed(String)
     case invalidURL(String)
     case verifyResponseMissingUserId
+    case toolLoopExceeded(limit: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -70,6 +71,7 @@ public enum ChatError: Error, LocalizedError {
         case .decodingFailed(let detail): return "Failed to decode response: \(detail)"
         case .invalidURL(let url): return "Invalid URL: \(url)"
         case .verifyResponseMissingUserId: return "Verify response missing data.userId"
+        case .toolLoopExceeded(let limit): return "Tool loop exceeded \(limit) iterations"
         }
     }
 }
@@ -240,13 +242,13 @@ public final class ChatService: @unchecked Sendable {
 
     // MARK: - Request Builders
 
-    func buildChatRequest(message: String? = nil, conversationId: String? = nil, stream: Bool) throws -> URLRequest {
+    func buildChatRequest(message: String? = nil, conversationId: String? = nil) throws -> URLRequest {
         var request = URLRequest(url: try url("/agents/\(agentId)/chat"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         applyAuthHeaders(&request)
         request.httpBody = try JSONEncoder().encode(
-            ChatRequestDTO(message: message, conversationId: conversationId, stream: stream)
+            ChatRequestDTO(message: message, conversationId: conversationId)
         )
         return request
     }
@@ -302,16 +304,14 @@ public final class ChatService: @unchecked Sendable {
 private struct ChatRequestDTO: Encodable {
     let message: String?
     let conversationId: String?
-    let stream: Bool
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(message, forKey: .message)
         try container.encodeIfPresent(conversationId, forKey: .conversationId)
-        try container.encode(stream, forKey: .stream)
     }
 
     enum CodingKeys: String, CodingKey {
-        case message, conversationId, stream
+        case message, conversationId
     }
 }
