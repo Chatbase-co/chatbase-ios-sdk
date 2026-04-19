@@ -8,6 +8,65 @@ extension ChatService {
         try await collectStream(streamMessage(text, conversationId: conversationId))
     }
 
+    /// Streams, collects, and transparently executes registered tool handlers.
+    /// Continues the stream via POST /chat {conversationId} until finish reason is not `.toolCalls`,
+    /// bounded to `maxIterations` turns.
+    public func sendMessage(
+        _ text: String,
+        conversationId: String? = nil,
+        registry: ToolRegistry,
+        maxIterations: Int = 10
+    ) async throws -> ChatResponse {
+        var stream = streamMessage(text, conversationId: conversationId)
+        var currentConversationId = conversationId
+
+        for _ in 0..<maxIterations {
+            let turn = try await collectTurn(stream)
+            let cid = turn.finish.conversationId ?? currentConversationId
+            currentConversationId = cid
+
+            if turn.finish.finishReason != .toolCalls {
+                guard let finalCid = cid else { throw ChatError.noContent }
+                return ChatResponse(
+                    message: Message(
+                        id: turn.messageId ?? turn.finish.messageId ?? "",
+                        text: turn.text,
+                        sender: .agent,
+                        date: .now,
+                        parts: []
+                    ),
+                    conversationId: finalCid,
+                    userMessageId: turn.finish.userMessageId,
+                    finishReason: turn.finish.finishReason ?? .stop,
+                    usage: turn.finish.usage ?? Usage(credits: 0)
+                )
+            }
+
+            guard let cid, !turn.toolCalls.isEmpty else { throw ChatError.noContent }
+
+            for tc in turn.toolCalls {
+                guard let handler = await registry.handler(for: tc.toolName) else {
+                    throw ChatError.toolHandlerMissing(name: tc.toolName)
+                }
+                let output: JSONValue
+                do {
+                    output = try await handler(tc.input)
+                } catch {
+                    output = .object(["error": .string(String(describing: error))])
+                }
+                try await submitToolResult(
+                    conversationId: cid,
+                    toolCall: tc,
+                    output: output
+                )
+            }
+
+            stream = continueConversation(cid)
+        }
+
+        throw ChatError.toolLoopExceeded(limit: maxIterations)
+    }
+
     /// Subscribes to an SSE stream, accumulates text + tool calls + finish info,
     /// returns a terminal ChatResponse. Throws on decoding / network errors.
     /// Tool calls that appear in the stream are silently collected here; the

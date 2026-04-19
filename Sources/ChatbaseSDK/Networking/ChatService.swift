@@ -64,6 +64,7 @@ public enum ChatError: Error, LocalizedError {
     case invalidURL(String)
     case verifyResponseMissingUserId
     case toolLoopExceeded(limit: Int)
+    case toolHandlerMissing(name: String)
 
     public var errorDescription: String? {
         switch self {
@@ -72,6 +73,7 @@ public enum ChatError: Error, LocalizedError {
         case .invalidURL(let url): return "Invalid URL: \(url)"
         case .verifyResponseMissingUserId: return "Verify response missing data.userId"
         case .toolLoopExceeded(let limit): return "Tool loop exceeded \(limit) iterations"
+        case .toolHandlerMissing(let name): return "No handler registered for tool '\(name)'"
         }
     }
 }

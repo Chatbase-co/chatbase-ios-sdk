@@ -178,6 +178,18 @@ public final class ChatStream: AsyncSequence, Sendable {
 
 public final class ChatbaseClient: @unchecked Sendable {
     public let service: ChatService
+    public let toolRegistry = ToolRegistry()
+
+    @discardableResult
+    public func registerTool(_ name: String,
+                             handler: @escaping ToolHandler) async -> ChatbaseClient {
+        await toolRegistry.register(name, handler: handler)
+        return self
+    }
+
+    public func unregisterTool(_ name: String) async {
+        await toolRegistry.unregister(name)
+    }
 
     public init(agentId: String,
                 baseURL: String = "https://www.chatbase.co/api/sdk",
@@ -242,7 +254,7 @@ public final class ChatbaseClient: @unchecked Sendable {
     }
 
     public func send(_ message: String, conversationId: String? = nil) async throws -> ChatResponse {
-        try await service.sendMessage(message, conversationId: conversationId)
+        try await service.sendMessage(message, conversationId: conversationId, registry: toolRegistry)
     }
 
     public func listConversations(cursor: String? = nil, limit: Int? = nil) async throws -> PaginatedResponse<Conversation> {
