@@ -351,6 +351,39 @@ struct ChatServiceTests {
         #expect(response.total == 42)
     }
 
+    @Test("URLSessionClient streaming session uses configured timeout")
+    func streamingTimeoutConfigurable() {
+        let client = URLSessionClient(streamIdleTimeout: 120)
+        #expect(client.streamSessionTimeout == 120)
+
+        let defaultClient = URLSessionClient()
+        #expect(defaultClient.streamSessionTimeout == 300)
+    }
+
+    @Test("conversations decode epoch-ms timestamps as Date")
+    func conversationsEpochMsTimestamps() async throws {
+        // 1704067200000 ms = 2024-01-01T00:00:00Z
+        mockClient.respondWithRawJSON("""
+        {
+          "data": [{
+            "id": "c-1",
+            "title": null,
+            "createdAt": 1704067200000,
+            "updatedAt": 1704067200000,
+            "userId": null,
+            "status": "ongoing"
+          }],
+          "pagination": {"cursor": null, "hasMore": false, "total": 1}
+        }
+        """)
+
+        let page = try await service.listConversations()
+        let first = try #require(page.data.first)
+        let expected = Date(timeIntervalSince1970: 1704067200)
+        #expect(abs(first.createdAt.timeIntervalSince(expected)) < 0.001)
+        #expect(abs(first.updatedAt.timeIntervalSince(expected)) < 0.001)
+    }
+
     @Test("passes cursor and limit as query params")
     func listConversationsQueryParams() async throws {
         mockClient.respondWithRawJSON("""

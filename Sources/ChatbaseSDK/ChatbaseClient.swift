@@ -179,8 +179,11 @@ public final class ChatStream: AsyncSequence, Sendable {
 public final class ChatbaseClient: @unchecked Sendable {
     public let service: ChatService
 
-    public init(agentId: String, baseURL: String = "https://www.chatbase.co/api/sdk") {
+    public init(agentId: String,
+                baseURL: String = "https://www.chatbase.co/api/sdk",
+                streamIdleTimeout: TimeInterval = 300) {
         self.service = ChatService(
+            client: URLSessionClient(streamIdleTimeout: streamIdleTimeout),
             agentId: agentId,
             baseURL: baseURL,
             deviceId: DeviceId.get(),

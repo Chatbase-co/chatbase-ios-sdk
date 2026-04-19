@@ -119,8 +119,8 @@ enum MessagePartDTO: Decodable {
 struct ConversationDTO: Decodable {
     let id: String
     let title: String?
-    let createdAt: Double
-    let updatedAt: Double
+    let createdAt: Int64
+    let updatedAt: Int64
     let userId: String?
     let status: String
 }
@@ -129,7 +129,7 @@ struct ConversationMessageDTO: Decodable {
     let id: String
     let role: String
     let parts: [MessagePartDTO]
-    let createdAt: Double?
+    let createdAt: Int64?
     let feedback: String?
     let metadata: ConversationMessageMetadataDTO?
 }
@@ -220,7 +220,7 @@ public final class ChatService: @unchecked Sendable {
             id: dto.id,
             text: text,
             sender: dto.role == "user" ? .user : .agent,
-            date: dto.createdAt.map { Date(timeIntervalSince1970: $0) } ?? .now,
+            date: dto.createdAt.map { Date(timeIntervalSince1970: Double($0) / 1000) } ?? .now,
             feedback: dto.feedback.flatMap { MessageFeedback(rawValue: $0) },
             score: dto.metadata?.score,
             parts: mapParts(dto.parts)
@@ -231,8 +231,8 @@ public final class ChatService: @unchecked Sendable {
         Conversation(
             id: dto.id,
             title: dto.title,
-            createdAt: Date(timeIntervalSince1970: dto.createdAt),
-            updatedAt: Date(timeIntervalSince1970: dto.updatedAt),
+            createdAt: Date(timeIntervalSince1970: Double(dto.createdAt) / 1000),
+            updatedAt: Date(timeIntervalSince1970: Double(dto.updatedAt) / 1000),
             userId: dto.userId,
             status: ConversationStatus(rawValue: dto.status) ?? .ongoing
         )
