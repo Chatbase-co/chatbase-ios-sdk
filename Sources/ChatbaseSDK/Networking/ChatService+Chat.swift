@@ -44,9 +44,11 @@ extension ChatService {
             path: "/agents/\(agentId)/verify",
             body: VerifyRequestDTO(token: token)
         )
-        struct Ack: Decodable {}
-        let _: Ack = try await sendRequest(request)
-        updateAuth(.identified(token: token))
+        let response: VerifyResponseDTO = try await sendRequest(request)
+        guard let userId = response.data.userId, !userId.isEmpty else {
+            throw ChatError.verifyResponseMissingUserId
+        }
+        updateAuth(.identified(token: token, userId: userId))
     }
 
     public func continueConversation(_ conversationId: String) -> AsyncThrowingStream<StreamEvent, Error> {
@@ -120,6 +122,11 @@ extension ChatService {
 
 struct VerifyRequestDTO: Encodable {
     let token: String
+}
+
+struct VerifyResponseDTO: Decodable {
+    struct Data: Decodable { let userId: String? }
+    let data: Data
 }
 
 struct ChatResponseDTO: Decodable {

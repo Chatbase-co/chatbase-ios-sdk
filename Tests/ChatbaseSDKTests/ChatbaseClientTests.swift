@@ -336,12 +336,14 @@ struct ChatbaseClientTests {
         let c = client
 
         mockClient.respondWithRawJSON("""
-        {"data": {"ok": true}}
+        {"data": {"userId": "user-xyz"}}
         """)
 
         try await c.identify(token: "jwt-xyz")
 
-        #expect(c.authState == .identified(token: "jwt-xyz"))
+        #expect(c.authState == .identified(token: "jwt-xyz", userId: "user-xyz"))
+        #expect(c.currentUserId == "user-xyz")
+        #expect(c.isIdentified == true)
     }
 
     @Test("logout returns to anonymous")
@@ -351,12 +353,14 @@ struct ChatbaseClientTests {
             agentId: "test-agent",
             baseURL: "https://test.api.com/v2",
             deviceId: "test-device",
-            auth: .identified(token: "jwt")
+            auth: .identified(token: "jwt", userId: "user-1")
         )
         let c = ChatbaseClient(service: svc)
 
-        #expect(c.authState == .identified(token: "jwt"))
+        #expect(c.authState == .identified(token: "jwt", userId: "user-1"))
         c.logout()
         #expect(c.authState == .anonymous)
+        #expect(c.currentUserId == nil)
+        #expect(c.isIdentified == false)
     }
 }

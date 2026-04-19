@@ -62,12 +62,14 @@ public enum ChatError: Error, LocalizedError {
     case noContent
     case decodingFailed(String)
     case invalidURL(String)
+    case verifyResponseMissingUserId
 
     public var errorDescription: String? {
         switch self {
         case .noContent: return "No content in response"
         case .decodingFailed(let detail): return "Failed to decode response: \(detail)"
         case .invalidURL(let url): return "Invalid URL: \(url)"
+        case .verifyResponseMissingUserId: return "Verify response missing data.userId"
         }
     }
 }
@@ -282,7 +284,7 @@ public final class ChatService: @unchecked Sendable {
     func applyAuthHeaders(_ request: inout URLRequest) {
         request.setValue(sdkUserAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(deviceId, forHTTPHeaderField: "X-Device-Id")
-        if case .identified(let token) = authState {
+        if case .identified(let token, _) = authState {
             request.setValue(token, forHTTPHeaderField: "X-User-Token")
         }
     }

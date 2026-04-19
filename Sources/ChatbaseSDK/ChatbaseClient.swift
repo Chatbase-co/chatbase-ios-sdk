@@ -196,6 +196,16 @@ public final class ChatbaseClient: @unchecked Sendable {
 
     public var authState: AuthState { service.authState }
 
+    public var currentUserId: String? {
+        if case .identified(_, let userId) = service.authState { return userId }
+        return nil
+    }
+
+    public var isIdentified: Bool {
+        if case .identified = service.authState { return true }
+        return false
+    }
+
     public func identify(token: String) async throws {
         try await service.verify(token: token)
     }

@@ -489,7 +489,7 @@ struct ChatServiceTests {
             agentId: "test-agent",
             baseURL: "https://test.api.com/v2",
             deviceId: "test-device",
-            auth: .identified(token: "jwt-abc")
+            auth: .identified(token: "jwt-abc", userId: "user-1")
         )
 
         mockClient.respondWithRawJSON("""
@@ -514,12 +514,12 @@ struct ChatServiceTests {
         )
 
         mockClient.respondWithRawJSON("""
-        {"data": {"ok": true}}
+        {"data": {"userId": "user-xyz"}}
         """)
 
         try await svc.verify(token: "jwt-xyz")
 
-        #expect(svc.authState == .identified(token: "jwt-xyz"))
+        #expect(svc.authState == .identified(token: "jwt-xyz", userId: "user-xyz"))
 
         #expect(mockClient.lastRequest?.httpMethod == "POST")
         #expect(mockClient.lastRequest?.url?.path.hasSuffix("/agents/test-agent/verify") == true)
@@ -528,6 +528,29 @@ struct ChatServiceTests {
         let body = try #require(mockClient.lastRequest?.httpBody)
         let decoded = try JSONDecoder().decode([String: String].self, from: body)
         #expect(decoded["token"] == "jwt-xyz")
+    }
+
+    @Test("verify throws when userId is missing")
+    func verifyThrowsMissingUserId() async throws {
+        let svc = ChatService(
+            client: mockClient,
+            agentId: "test-agent",
+            baseURL: "https://test.api.com/v2",
+            deviceId: "test-device"
+        )
+
+        mockClient.respondWithRawJSON("""
+        {"data": {}}
+        """)
+
+        do {
+            try await svc.verify(token: "jwt-abc")
+            Issue.record("Expected verifyResponseMissingUserId")
+        } catch ChatError.verifyResponseMissingUserId {
+            // expected
+        }
+
+        #expect(svc.authState == .anonymous)
     }
 
     @Test("verify 401 leaves auth state anonymous and surfaces status code")
