@@ -1,6 +1,6 @@
 # ChatbaseSDK
 
-Swift SDK for the Chatbase SDK API. Streaming chat, client-side tools with an auto tool-loop, identity verification, conversation history with cursor-based pagination, and retry.
+Swift SDK for Chatbase. Streaming chat, client-side tools with an auto tool-loop, identity verification, conversation history with cursor-based pagination, and retry.
 
 ## Requirements
 
@@ -68,6 +68,8 @@ struct ChatView: View {
 
 `ConversationState` exposes `messages`, `isSending`, `isLoadingHistory`, `hasMoreHistory`, `conversationId`, and `error`, plus `sendMessage`, `retry`, `loadHistory`, `loadMoreHistory`, `clear`, and `clearError`.
 
+For a paginated list of the user's past conversations, use `ConversationListState` — same shape (`conversations`, `isLoading`, `hasMore`, `error`) with `load(limit:)` and `loadMore()`.
+
 ## Identity Verification
 
 Attach an end user with an HS256 JWT signed by your backend using the agent's identity verification secret. Payload must include `user_id` (or `sub`).
@@ -105,20 +107,14 @@ Register a handler once. When the agent invokes the tool mid-stream, the SDK run
 ```swift
 client.tool("lookup_order") { input in
     guard let id = input["order_id"]?.stringValue else {
-        throw ToolError("Missing order_id")
+        return .object(["error": .string("Missing order_id")])
     }
     let order = try await OrderService.fetch(id: id)
     return .object(["status": .string(order.status)])
 }
-
-struct ToolError: LocalizedError {
-    let message: String
-    init(_ m: String) { message = m }
-    var errorDescription: String? { message }
-}
 ```
 
-Handlers are async — they may suspend on UI (e.g. awaiting a user selection) before returning. Throwing surfaces an `{"error": "..."}` payload to the agent.
+Handlers are async — they may suspend on UI (e.g. awaiting a user selection) before returning. Surface a failure to the agent by returning `.object(["error": .string("...")])`. Thrown errors are converted to the same payload.
 
 ### Tool loop limit
 
