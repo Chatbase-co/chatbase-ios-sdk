@@ -4,8 +4,8 @@ import Foundation
 
 extension ChatService {
 
-    public func sendMessage(_ text: String, conversationId: String? = nil, userId: String? = nil) async throws -> ChatResponse {
-        let request = try buildChatRequest(message: text, conversationId: conversationId, stream: false, userId: userId)
+    public func sendMessage(_ text: String, conversationId: String? = nil) async throws -> ChatResponse {
+        let request = try buildChatRequest(message: text, conversationId: conversationId, stream: false)
         let response: ChatResponseDTO = try await sendRequest(request)
 
         let parts = mapParts(response.data.parts)
@@ -27,12 +27,26 @@ extension ChatService {
         )
     }
 
-    public func streamMessage(_ text: String, conversationId: String? = nil, userId: String? = nil) -> AsyncThrowingStream<StreamEvent, Error> {
+    public func streamMessage(_ text: String, conversationId: String? = nil) -> AsyncThrowingStream<StreamEvent, Error> {
         do {
-            return streamSSE(request: try buildChatRequest(message: text, conversationId: conversationId, stream: true, userId: userId))
+            return streamSSE(request: try buildChatRequest(message: text, conversationId: conversationId, stream: true))
         } catch {
             return AsyncThrowingStream { $0.finish(throwing: error) }
         }
+    }
+
+    // MARK: - Verify
+
+    /// POST /verify with the given JWT; on success, promotes the session to identified.
+    public func verify(token: String) async throws {
+        let request = try buildJSONRequest(
+            method: "POST",
+            path: "/agents/\(agentId)/verify",
+            body: VerifyRequestDTO(token: token)
+        )
+        struct Ack: Decodable {}
+        let _: Ack = try await sendRequest(request)
+        updateAuth(.identified(token: token))
     }
 
     public func continueConversation(_ conversationId: String) -> AsyncThrowingStream<StreamEvent, Error> {
@@ -52,7 +66,6 @@ extension ChatService {
         Task { @Sendable in
             do {
                 let (bytes, _) = try await client.streamLines(request: request)
-                var lastKnownEventTime = ContinuousClock.now
 
                 for try await line in bytes.lines {
                     guard line.hasPrefix("data: ") else { continue }
@@ -60,40 +73,37 @@ extension ChatService {
                     if payload == "[DONE]" { break }
                     guard let data = payload.data(using: .utf8) else { continue }
 
+                    let event: StreamEventDTO
                     do {
-                        let event = try JSONDecoder().decode(StreamEventDTO.self, from: data)
-                        switch event {
-                        case .start(let messageId):
-                            lastKnownEventTime = .now
-                            continuation.yield(.messageStarted(id: messageId))
-                        case .textDelta(let delta):
-                            lastKnownEventTime = .now
-                            continuation.yield(.textChunk(delta))
-                        case .finish(let metadata):
-                            lastKnownEventTime = .now
-                            continuation.yield(.finished(StreamFinishInfo(
-                                conversationId: metadata.conversationId,
-                                messageId: metadata.messageId,
-                                userMessageId: metadata.userMessageId,
-                                userId: metadata.userId,
-                                finishReason: metadata.finishReason.flatMap { FinishReason(rawValue: $0) },
-                                usage: metadata.usage.map { Usage(credits: $0.credits) }
-                            )))
-                        case .toolCall(let toolCallId, let toolName, let input):
-                            lastKnownEventTime = .now
-                            continuation.yield(.toolCall(ToolCall(
-                                toolCallId: toolCallId,
-                                toolName: toolName,
-                                input: input
-                            )))
-                        case .other:
-                            if ContinuousClock.now - lastKnownEventTime > .seconds(10) {
-                                continuation.finish(throwing: ChatError.streamTimeout)
-                                return
-                            }
-                        }
+                        event = try JSONDecoder().decode(StreamEventDTO.self, from: data)
                     } catch {
                         serviceLogger.error("Failed to decode SSE event: \(error.localizedDescription)")
+                        continuation.finish(throwing: ChatError.decodingFailed(String(describing: error)))
+                        return
+                    }
+
+                    switch event {
+                    case .start(let messageId):
+                        continuation.yield(.messageStarted(id: messageId))
+                    case .textDelta(let delta):
+                        continuation.yield(.textChunk(delta))
+                    case .finish(let metadata):
+                        continuation.yield(.finished(StreamFinishInfo(
+                            conversationId: metadata.conversationId,
+                            messageId: metadata.messageId,
+                            userMessageId: metadata.userMessageId,
+                            userId: metadata.userId,
+                            finishReason: metadata.finishReason.flatMap { FinishReason(rawValue: $0) },
+                            usage: metadata.usage.map { Usage(credits: $0.credits) }
+                        )))
+                    case .toolCall(let toolCallId, let toolName, let input):
+                        continuation.yield(.toolCall(ToolCall(
+                            toolCallId: toolCallId,
+                            toolName: toolName,
+                            input: input
+                        )))
+                    case .other:
+                        continue
                     }
                 }
                 continuation.finish()
@@ -107,6 +117,10 @@ extension ChatService {
 }
 
 // MARK: - Chat DTOs
+
+struct VerifyRequestDTO: Encodable {
+    let token: String
+}
 
 struct ChatResponseDTO: Decodable {
     let data: ChatResponseDataDTO

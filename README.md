@@ -104,23 +104,19 @@ stream.isCancelled  // true
 
 ```swift
 // List conversations for this user
-let conversations = try await client.listConversations()
+var page = try await client.listConversations()
+// page.data     — [Conversation]
+// page.hasMore  — Bool
+// page.total    — Int
 
-// Get a conversation with recent messages
-let (conversation, messages, pagination) = try await client.getConversation("conv-id")
+// Load the next page
+if let next = try await page.loadMore() {
+    page = next
+}
 
-// Load more messages (pagination)
-let older = try await client.listMessages(conversationId: "conv-id", cursor: pagination.cursor)
-```
-
-## Feedback
-
-```swift
-try await client.updateFeedback(
-    conversationId: "conv-id",
-    messageId: "msg-id",
-    feedback: .positive  // .positive, .negative, or nil to clear
-)
+// Recent messages in a conversation
+let messages = try await client.listMessages(conversationId: "conv-id")
+let older = try await messages.loadMore()  // nil if no more
 ```
 
 ## Retry

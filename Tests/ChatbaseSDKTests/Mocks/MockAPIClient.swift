@@ -10,9 +10,13 @@ import Foundation
 /// Use `respondWith(_:)` to queue JSON data for `send()`,
 /// and `respondWithSSE(_:)` to queue SSE lines for `streamLines()`.
 final class MockAPIClient: APIClient, @unchecked Sendable {
-    private var jsonResponses: [Data] = []
-    private var sseLines: [[String]] = []
-    private var errors: [Error?] = []
+    private enum Response {
+        case json(Data)
+        case sse([String])
+        case error(Error)
+    }
+
+    private var queue: [Response] = []
 
     var lastRequest: URLRequest?
     var requestCount = 0
@@ -20,19 +24,19 @@ final class MockAPIClient: APIClient, @unchecked Sendable {
     // MARK: - Configuration
 
     func respondWith<T: Encodable>(_ value: T) {
-        jsonResponses.append(try! JSONEncoder().encode(value))
+        queue.append(.json(try! JSONEncoder().encode(value)))
     }
 
     func respondWithRawJSON(_ json: String) {
-        jsonResponses.append(json.data(using: .utf8)!)
+        queue.append(.json(json.data(using: .utf8)!))
     }
 
     func respondWithSSE(_ lines: [String]) {
-        sseLines.append(lines)
+        queue.append(.sse(lines))
     }
 
     func respondWithError(_ error: Error) {
-        errors.append(error)
+        queue.append(.error(error))
     }
 
     // MARK: - APIClient
@@ -41,33 +45,36 @@ final class MockAPIClient: APIClient, @unchecked Sendable {
         lastRequest = request
         requestCount += 1
 
-        if let error = errors.first {
-            errors.removeFirst()
-            throw error!
-        }
+        guard !queue.isEmpty else { throw APIError.invalidResponse }
+        let response = queue.removeFirst()
 
-        guard !jsonResponses.isEmpty else {
+        switch response {
+        case .json(let data):
+            return try JSONDecoder().decode(T.self, from: data)
+        case .error(let error):
+            throw error
+        case .sse:
             throw APIError.invalidResponse
         }
-
-        let data = jsonResponses.removeFirst()
-        return try JSONDecoder().decode(T.self, from: data)
     }
 
     func streamLines(request: URLRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
         lastRequest = request
         requestCount += 1
 
-        if let error = errors.first {
-            errors.removeFirst()
-            throw error!
-        }
+        guard !queue.isEmpty else { throw APIError.invalidResponse }
+        let response = queue.removeFirst()
 
-        guard !sseLines.isEmpty else {
+        let lines: [String]
+        switch response {
+        case .sse(let sseLines):
+            lines = sseLines
+        case .error(let error):
+            throw error
+        case .json:
             throw APIError.invalidResponse
         }
 
-        let lines = sseLines.removeFirst()
         let combined = lines.joined(separator: "\n") + "\n"
         let data = combined.data(using: .utf8)!
 

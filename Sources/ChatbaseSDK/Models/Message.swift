@@ -18,8 +18,8 @@ public struct Usage: Sendable {
     public init(credits: Double) { self.credits = credits }
 }
 
-public struct MessagePart: @unchecked Sendable {
-    public enum Kind: @unchecked Sendable {
+public struct MessagePart: Sendable {
+    public enum Kind: Sendable {
         case text(String)
         case toolCall(toolCallId: String, toolName: String, input: JSONValue)
         case toolResult(toolCallId: String, toolName: String, output: JSONValue)
@@ -29,7 +29,7 @@ public struct MessagePart: @unchecked Sendable {
     public init(kind: Kind) { self.kind = kind }
 }
 
-public struct Message: Identifiable, @unchecked Sendable {
+public struct Message: Identifiable, Sendable {
     public var id: String
     public var text: String
     public var sender: MessageSender

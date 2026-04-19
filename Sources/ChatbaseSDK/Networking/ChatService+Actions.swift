@@ -50,18 +50,6 @@ extension ChatService {
         }
     }
 
-    // MARK: - Feedback
-
-    public func updateFeedback(conversationId: String, messageId: String, feedback: MessageFeedback?) async throws -> Message {
-        let request = try buildJSONRequest(
-            method: "PATCH",
-            path: "/agents/\(agentId)/conversations/\(conversationId)/messages/\(messageId)/feedback",
-            body: UpdateFeedbackRequestDTO(feedback: feedback?.rawValue)
-        )
-        let response: UpdateFeedbackResponseDTO = try await sendRequest(request)
-        guard let message = mapMessage(response.data) else { throw ChatError.noContent }
-        return message
-    }
 }
 
 // MARK: - Action DTOs
@@ -81,19 +69,3 @@ struct RetryRequestDTO: Encodable {
     let stream: Bool
 }
 
-struct UpdateFeedbackRequestDTO: Encodable {
-    let feedback: String?
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(feedback, forKey: .feedback)
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case feedback
-    }
-}
-
-struct UpdateFeedbackResponseDTO: Decodable {
-    let data: ConversationMessageDTO
-}

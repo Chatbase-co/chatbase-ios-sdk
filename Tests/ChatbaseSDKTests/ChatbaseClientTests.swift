@@ -13,8 +13,13 @@ struct ChatbaseClientTests {
     private let mockClient = MockAPIClient()
 
     private var client: ChatbaseClient {
-        let service = ChatService(client: mockClient, agentId: "test-agent", apiKey: "test-key", baseURL: "https://test.api.com/v2")
-        return ChatbaseClient(service: service, userId: "test-user")
+        let service = ChatService(
+            client: mockClient,
+            agentId: "test-agent",
+            baseURL: "https://test.api.com/v2",
+            deviceId: "test-device"
+        )
+        return ChatbaseClient(service: service)
     }
 
     // MARK: - Streaming text
@@ -58,23 +63,23 @@ struct ChatbaseClientTests {
 
         var receivedCall: ToolCallHandle?
 
-        // Pass conversationId — tool call arrives before finish event in the SSE stream
+        // Pass conversationId: tool call arrives before finish event in the SSE stream
         for try await event in await client.stream("Do it", conversationId: "conv-1") {
             if case .toolCall(let call) = event {
                 receivedCall = call
-                call.ignore()
+                await call.ignore()
             }
         }
 
         #expect(receivedCall?.toolCallId == "call-1")
         #expect(receivedCall?.toolName == "my_tool")
-        await #expect(receivedCall?.input["key"] == .string("val"))
+        #expect(receivedCall?.input["key"] == .string("val"))
         #expect(receivedCall?.conversationId == "conv-1")
     }
 
     // MARK: - resolve
 
-    @Test("resolve submits result and sets shouldContinue")
+    @Test("resolve submits result")
     func resolveSubmits() async throws {
         mockClient.respondWithSSE([
             "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
@@ -91,8 +96,7 @@ struct ChatbaseClientTests {
         for try await event in client.stream("Do it") {
             if case .toolCall(let call) = event {
                 await call.resolve(["result": .string("done")])
-                #expect(call.shouldContinue == true)
-                #expect(call.isResolved == true)
+                await #expect(call.status == .resolved)
             }
         }
 
@@ -100,30 +104,9 @@ struct ChatbaseClientTests {
         #expect(mockClient.requestCount == 2)
     }
 
-    @Test("resolve with continue: false sets shouldContinue to false")
-    func resolveNoContinue() async throws {
-        mockClient.respondWithSSE([
-            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
-            "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"call-1\",\"toolName\":\"my_tool\",\"input\":{}}",
-            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"finishReason\":\"tool-calls\"}}",
-            "data: [DONE]"
-        ])
-
-        mockClient.respondWithRawJSON("""
-        {"data": {"success": true}}
-        """)
-
-        for try await event in client.stream("Do it") {
-            if case .toolCall(let call) = event {
-                await call.resolve(["status": .string("started")], continue: false)
-                #expect(call.shouldContinue == false)
-            }
-        }
-    }
-
     // MARK: - fail
 
-    @Test("fail submits error and sets shouldContinue")
+    @Test("fail submits error result")
     func failSubmits() async throws {
         mockClient.respondWithSSE([
             "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
@@ -139,32 +122,11 @@ struct ChatbaseClientTests {
         for try await event in client.stream("Do it") {
             if case .toolCall(let call) = event {
                 await call.fail("Something broke")
-                #expect(call.shouldContinue == true)
+                await #expect(call.status == .failed)
             }
         }
 
         #expect(mockClient.requestCount == 2)
-    }
-
-    @Test("fail with continue: false does not set shouldContinue")
-    func failNoContinue() async throws {
-        mockClient.respondWithSSE([
-            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
-            "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"call-1\",\"toolName\":\"my_tool\",\"input\":{}}",
-            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"finishReason\":\"tool-calls\"}}",
-            "data: [DONE]"
-        ])
-
-        mockClient.respondWithRawJSON("""
-        {"data": {"success": true}}
-        """)
-
-        for try await event in client.stream("Do it") {
-            if case .toolCall(let call) = event {
-                await call.fail("Cancelled", continue: false)
-                #expect(call.shouldContinue == false)
-            }
-        }
     }
 
     // MARK: - ignore
@@ -180,9 +142,8 @@ struct ChatbaseClientTests {
 
         for try await event in client.stream("Log it") {
             if case .toolCall(let call) = event {
-                call.ignore()
-                #expect(call.isResolved == true)
-                #expect(call.shouldContinue == false)
+                await call.ignore()
+                await #expect(call.status == .ignored)
             }
         }
 
@@ -214,6 +175,61 @@ struct ChatbaseClientTests {
 
         // Stream + one submit = 2 (not 3)
         #expect(mockClient.requestCount == 2)
+    }
+
+    // MARK: - First-turn tool call uses conversationId from finish
+
+    @Test("first-turn tool call handle carries conversationId resolved from finish metadata")
+    func firstTurnToolCallGetsConversationId() async throws {
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
+            "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"call-1\",\"toolName\":\"my_tool\",\"input\":{}}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"new-conv\",\"finishReason\":\"tool-calls\"}}",
+            "data: [DONE]"
+        ])
+
+        var received: ToolCallHandle?
+
+        // Caller passes no conversationId (first-turn scenario)
+        for try await event in client.stream("Hi") {
+            if case .toolCall(let call) = event { received = call }
+        }
+
+        #expect(received?.conversationId == "new-conv")
+    }
+
+    // MARK: - Submission error + retry
+
+    @Test("submission failure lands in .submissionError and can be retried")
+    func submissionErrorRetry() async throws {
+        mockClient.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
+            "data: {\"type\":\"tool-input-available\",\"toolCallId\":\"call-1\",\"toolName\":\"my_tool\",\"input\":{}}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\",\"finishReason\":\"tool-calls\"}}",
+            "data: [DONE]"
+        ])
+
+        // submitToolResult retries 3x internally. Exhaust them to hit submissionError.
+        mockClient.respondWithError(APIError.invalidResponse)
+        mockClient.respondWithError(APIError.invalidResponse)
+        mockClient.respondWithError(APIError.invalidResponse)
+        // Retry attempt succeeds
+        mockClient.respondWithRawJSON("""
+        {"data": {"success": true}}
+        """)
+
+        for try await event in client.stream("Do it") {
+            if case .toolCall(let call) = event {
+                await call.resolve(["result": .string("first")])
+                await #expect(call.status == .submissionError(APIError.invalidResponse))
+
+                await call.resolve(["result": .string("retry")])
+                await #expect(call.status == .resolved)
+            }
+        }
+
+        // Stream + 3 failed submits + 1 successful = 5
+        #expect(mockClient.requestCount == 5)
     }
 
     // MARK: - continue
@@ -307,22 +323,40 @@ struct ChatbaseClientTests {
         #expect(startedId == "msg-1")
     }
 
-    // MARK: - userId
+    // MARK: - identity
 
-    @Test("uses configured userId")
-    func usesUserId() async throws {
-        let c = client // userId is "test-user"
+    @Test("exposes deviceId and starts anonymous")
+    func startsAnonymous() {
+        #expect(client.deviceId == "test-device")
+        #expect(client.authState == .anonymous)
+    }
 
-        mockClient.respondWithSSE([
-            "data: {\"type\":\"start\",\"messageId\":\"msg-1\"}",
-            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"conv-1\"}}",
-            "data: [DONE]"
-        ])
+    @Test("identify promotes session")
+    func identifyFlow() async throws {
+        let c = client
 
-        for try await _ in c.stream("Hi") {}
+        mockClient.respondWithRawJSON("""
+        {"data": {"ok": true}}
+        """)
 
-        let body = try #require(mockClient.lastRequest?.httpBody)
-        let json = try JSONSerialization.jsonObject(with: body) as! [String: Any]
-        #expect(json["userId"] as? String == "test-user")
+        try await c.identify(token: "jwt-xyz")
+
+        #expect(c.authState == .identified(token: "jwt-xyz"))
+    }
+
+    @Test("logout returns to anonymous")
+    func logoutClears() async throws {
+        let svc = ChatService(
+            client: mockClient,
+            agentId: "test-agent",
+            baseURL: "https://test.api.com/v2",
+            deviceId: "test-device",
+            auth: .identified(token: "jwt")
+        )
+        let c = ChatbaseClient(service: svc)
+
+        #expect(c.authState == .identified(token: "jwt"))
+        c.logout()
+        #expect(c.authState == .anonymous)
     }
 }

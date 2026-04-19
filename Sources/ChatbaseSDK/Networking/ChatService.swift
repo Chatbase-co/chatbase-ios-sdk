@@ -60,16 +60,12 @@ public struct ChatResponse: Sendable {
 
 public enum ChatError: Error, LocalizedError {
     case noContent
-    case streamTimeout
-    case noConversation
     case decodingFailed(String)
     case invalidURL(String)
 
     public var errorDescription: String? {
         switch self {
         case .noContent: return "No content in response"
-        case .streamTimeout: return "Stream timed out"
-        case .noConversation: return "No active conversation"
         case .decodingFailed(let detail): return "Failed to decode response: \(detail)"
         case .invalidURL(let url): return "Invalid URL: \(url)"
         }
@@ -148,17 +144,41 @@ struct PaginationDTO: Decodable {
 
 // MARK: - ChatService
 
-public final class ChatService: Sendable {
+public final class ChatService: @unchecked Sendable {
     let client: APIClient
     let baseURL: String
     let agentId: String
-    let apiKey: String
+    public let deviceId: String
 
-    public init(client: APIClient = URLSessionClient(), agentId: String, apiKey: String, baseURL: String = "https://www.chatbase.co/api/v2") {
+    private let lock = NSLock()
+    private var auth: AuthState
+
+    public init(
+        client: APIClient = URLSessionClient(),
+        agentId: String,
+        baseURL: String = "https://www.chatbase.co/api/sdk",
+        deviceId: String,
+        auth: AuthState = .anonymous
+    ) {
         self.client = client
         self.baseURL = baseURL
         self.agentId = agentId
-        self.apiKey = apiKey
+        self.deviceId = deviceId
+        self.auth = auth
+    }
+
+    // MARK: - Auth state
+
+    public var authState: AuthState {
+        lock.lock(); defer { lock.unlock() }
+        return auth
+    }
+
+    func updateAuth(_ newState: AuthState) {
+        lock.lock()
+        self.auth = newState
+        lock.unlock()
+        Identity.save(newState)
     }
 
     // MARK: - Internal Helpers
@@ -216,19 +236,15 @@ public final class ChatService: Sendable {
         )
     }
 
-    func mapPagination(_ dto: PaginationDTO) -> Pagination {
-        Pagination(cursor: dto.cursor, hasMore: dto.hasMore, total: dto.total)
-    }
-
     // MARK: - Request Builders
 
-    func buildChatRequest(message: String? = nil, conversationId: String? = nil, stream: Bool, userId: String? = nil) throws -> URLRequest {
+    func buildChatRequest(message: String? = nil, conversationId: String? = nil, stream: Bool) throws -> URLRequest {
         var request = URLRequest(url: try url("/agents/\(agentId)/chat"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        applyAuthHeaders(&request)
         request.httpBody = try JSONEncoder().encode(
-            ChatRequestDTO(message: message, conversationId: conversationId, stream: stream, userId: userId)
+            ChatRequestDTO(message: message, conversationId: conversationId, stream: stream)
         )
         return request
     }
@@ -237,7 +253,7 @@ public final class ChatService: Sendable {
         var request = URLRequest(url: try url(path))
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        applyAuthHeaders(&request)
         request.httpBody = try JSONEncoder().encode(body)
         return request
     }
@@ -252,7 +268,7 @@ public final class ChatService: Sendable {
         }
         var request = URLRequest(url: finalURL)
         request.httpMethod = "GET"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        applyAuthHeaders(&request)
         return request
     }
 
@@ -261,6 +277,14 @@ public final class ChatService: Sendable {
             throw ChatError.invalidURL("\(baseURL)\(path)")
         }
         return url
+    }
+
+    func applyAuthHeaders(_ request: inout URLRequest) {
+        request.setValue(sdkUserAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-Id")
+        if case .identified(let token) = authState {
+            request.setValue(token, forHTTPHeaderField: "X-User-Token")
+        }
     }
 
     func paginationQuery(cursor: String?, limit: Int?) -> [URLQueryItem] {
@@ -277,17 +301,15 @@ private struct ChatRequestDTO: Encodable {
     let message: String?
     let conversationId: String?
     let stream: Bool
-    let userId: String?
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(message, forKey: .message)
         try container.encodeIfPresent(conversationId, forKey: .conversationId)
         try container.encode(stream, forKey: .stream)
-        try container.encodeIfPresent(userId, forKey: .userId)
     }
 
     enum CodingKeys: String, CodingKey {
-        case message, conversationId, stream, userId
+        case message, conversationId, stream
     }
 }

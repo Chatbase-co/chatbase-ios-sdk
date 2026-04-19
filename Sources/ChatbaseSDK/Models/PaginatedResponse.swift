@@ -2,22 +2,24 @@ import Foundation
 
 public struct PaginatedResponse<T: Sendable>: Sendable {
     public let data: [T]
-    public let pagination: Pagination
-
-    public init(data: [T], pagination: Pagination) {
-        self.data = data
-        self.pagination = pagination
-    }
-}
-
-public struct Pagination: Sendable {
-    public let cursor: String?
     public let hasMore: Bool
     public let total: Int
+    private let fetchNext: @Sendable () async throws -> PaginatedResponse<T>
 
-    public init(cursor: String?, hasMore: Bool, total: Int) {
-        self.cursor = cursor
+    public init(
+        data: [T],
+        hasMore: Bool,
+        total: Int,
+        fetchNext: @escaping @Sendable () async throws -> PaginatedResponse<T>
+    ) {
+        self.data = data
         self.hasMore = hasMore
         self.total = total
+        self.fetchNext = fetchNext
+    }
+
+    public func loadMore() async throws -> PaginatedResponse<T>? {
+        guard hasMore else { return nil }
+        return try await fetchNext()
     }
 }
