@@ -245,12 +245,16 @@ public final class ChatbaseClient: @unchecked Sendable {
         )
     }
 
-    public func retry(conversationId: String, messageId: String) -> ChatStream {
+    public func retryStream(conversationId: String, messageId: String) -> ChatStream {
         ChatStream(
             rawStream: service.retryMessage(conversationId: conversationId, messageId: messageId),
             conversationId: conversationId,
             service: service
         )
+    }
+
+    public func retryMessage(conversationId: String, messageId: String) async throws -> ChatResponse {
+        try await service.retry(conversationId: conversationId, messageId: messageId, registry: toolRegistry)
     }
 
     public func send(_ message: String, conversationId: String? = nil) async throws -> ChatResponse {

@@ -86,6 +86,25 @@ struct ChatbaseClientToolLoopTests {
         }
     }
 
+    @Test("retryMessage blocking collects stream into ChatResponse")
+    func retryBlocking() async throws {
+        let mock = MockAPIClient()
+        mock.respondWithSSE([
+            "data: {\"type\":\"start\",\"messageId\":\"m-retry\"}",
+            "data: {\"type\":\"text-delta\",\"delta\":\"retried\"}",
+            "data: {\"type\":\"finish\",\"messageMetadata\":{\"conversationId\":\"c1\",\"messageId\":\"m-retry\",\"userMessageId\":null,\"userId\":null,\"finishReason\":\"stop\",\"usage\":{\"credits\":0}}}",
+            "data: [DONE]"
+        ])
+
+        let svc = ChatService(client: mock, agentId: "a", baseURL: "https://x", deviceId: "d")
+        let client = ChatbaseClient(service: svc)
+
+        let response = try await client.retryMessage(conversationId: "c1", messageId: "old-msg")
+        #expect(response.message.text == "retried")
+        #expect(response.conversationId == "c1")
+        #expect(response.finishReason == .stop)
+    }
+
     @Test("send without tool calls returns collected text directly")
     func sendNoToolCalls() async throws {
         let mock = MockAPIClient()

@@ -50,6 +50,61 @@ extension ChatService {
         }
     }
 
+    /// Blocking retry that drives the same tool loop as sendMessage:
+    /// seed stream = POST /conversations/{id}/retry {messageId, stream:true},
+    /// continuation turns via POST /chat {conversationId, stream:true}.
+    public func retry(
+        conversationId: String,
+        messageId: String,
+        registry: ToolRegistry,
+        maxIterations: Int = 10
+    ) async throws -> ChatResponse {
+        var stream = retryMessage(conversationId: conversationId, messageId: messageId)
+        var currentConversationId: String? = conversationId
+
+        for _ in 0..<maxIterations {
+            let turn = try await collectTurn(stream)
+            let cid = turn.finish.conversationId ?? currentConversationId
+            currentConversationId = cid
+
+            if turn.finish.finishReason != .toolCalls {
+                guard let finalCid = cid else { throw ChatError.noContent }
+                return ChatResponse(
+                    message: Message(
+                        id: turn.messageId ?? turn.finish.messageId ?? "",
+                        text: turn.text,
+                        sender: .agent,
+                        date: .now,
+                        parts: []
+                    ),
+                    conversationId: finalCid,
+                    userMessageId: turn.finish.userMessageId,
+                    finishReason: turn.finish.finishReason ?? .stop,
+                    usage: turn.finish.usage ?? Usage(credits: 0)
+                )
+            }
+
+            guard let cid, !turn.toolCalls.isEmpty else { throw ChatError.noContent }
+
+            for tc in turn.toolCalls {
+                guard let handler = await registry.handler(for: tc.toolName) else {
+                    throw ChatError.toolHandlerMissing(name: tc.toolName)
+                }
+                let output: JSONValue
+                do {
+                    output = try await handler(tc.input)
+                } catch {
+                    output = .object(["error": .string(String(describing: error))])
+                }
+                try await submitToolResult(conversationId: cid, toolCall: tc, output: output)
+            }
+
+            stream = continueConversation(cid)
+        }
+
+        throw ChatError.toolLoopExceeded(limit: maxIterations)
+    }
+
 }
 
 // MARK: - Action DTOs
