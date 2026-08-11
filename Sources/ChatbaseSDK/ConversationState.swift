@@ -289,6 +289,13 @@ public final class ConversationState {
             messages[i].isStreaming = false
             messages[i].isError = true
         }
+        messages = messages.map { message in
+            guard case .toolCall(var card) = message.kind, case .executing = card.status else { return message }
+            card.status = .failure
+            var failed = message
+            failed.kind = .toolCall(card)
+            return failed
+        }
     }
 
     // MARK: - Helpers

@@ -140,8 +140,8 @@ public final class ChatbaseClient: @unchecked Sendable {
 
             // Buffer tool calls until finish event resolves conversationId
             // (required for first-turn streams where the id isn't known yet).
-            var pendingToolCalls: [ToolCall] = []
-            var resolvedClientCalls: [ToolCall] = []
+            var toolCalls: [ToolCall] = []
+            var resolvedIds: Set<String> = []
 
             for try await event in rawStream {
                 switch event {
@@ -151,11 +151,10 @@ public final class ChatbaseClient: @unchecked Sendable {
                     accumulatedText += chunk
                     await callbacks.onTextDelta?(chunk)
                 case .toolCall(let tc):
-                    pendingToolCalls.append(tc)
+                    toolCalls.append(tc)
                 case .toolOutput(let toolCallId, let output):
-                    guard let i = pendingToolCalls.firstIndex(where: { $0.toolCallId == toolCallId }) else { continue }
-                    let tc = pendingToolCalls.remove(at: i)
-                    if toolRegistry.get(tc.toolName) != nil { resolvedClientCalls.append(tc) }
+                    guard let tc = toolCalls.first(where: { $0.toolCallId == toolCallId }) else { continue }
+                    resolvedIds.insert(toolCallId)
                     await callbacks.onToolCall?(ToolCallInfo(toolCallId: tc.toolCallId, toolName: tc.toolName, input: tc.input))
                     await callbacks.onToolResult?(ToolResultInfo(toolCallId: tc.toolCallId, toolName: tc.toolName, output: output))
                 case .finished(let info):
@@ -165,7 +164,10 @@ public final class ChatbaseClient: @unchecked Sendable {
                 }
             }
 
-            for tc in resolvedClientCalls {
+            let resolved = toolCalls.filter { resolvedIds.contains($0.toolCallId) }
+            let pendingToolCalls = toolCalls.filter { !resolvedIds.contains($0.toolCallId) }
+
+            for tc in resolved where toolRegistry.get(tc.toolName) != nil {
                 _ = try await runTool(name: tc.toolName, input: tc.input)
             }
 
