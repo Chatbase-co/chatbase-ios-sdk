@@ -39,6 +39,7 @@ public enum StreamEvent: Sendable {
     case messageStarted(id: String)
     case textChunk(String)
     case toolCall(ToolCall)
+    case toolOutput(toolCallId: String, output: JSONValue)
     case finished(StreamFinishInfo)
 }
 

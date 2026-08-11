@@ -104,6 +104,8 @@ extension ChatService {
                             toolName: toolName,
                             input: input
                         )))
+                    case .toolOutput(let toolCallId, let output):
+                        continuation.yield(.toolOutput(toolCallId: toolCallId, output: output))
                     case .other:
                         continue
                     }
@@ -150,11 +152,12 @@ enum StreamEventDTO: Decodable {
     case start(messageId: String)
     case textDelta(delta: String)
     case toolCall(toolCallId: String, toolName: String, input: JSONValue)
+    case toolOutput(toolCallId: String, output: JSONValue)
     case finish(metadata: StreamFinishMetadataDTO)
     case other
 
     enum CodingKeys: String, CodingKey {
-        case type, messageId, delta, messageMetadata, toolName, toolCallId, input
+        case type, messageId, delta, messageMetadata, toolName, toolCallId, input, output, errorText
     }
 
     init(from decoder: Decoder) throws {
@@ -172,6 +175,16 @@ enum StreamEventDTO: Decodable {
                 toolCallId: try container.decode(String.self, forKey: .toolCallId),
                 toolName: try container.decode(String.self, forKey: .toolName),
                 input: (try? container.decode(JSONValue.self, forKey: .input)) ?? .object([:])
+            )
+        case "tool-output-available":
+            self = .toolOutput(
+                toolCallId: try container.decode(String.self, forKey: .toolCallId),
+                output: (try? container.decode(JSONValue.self, forKey: .output)) ?? .object([:])
+            )
+        case "tool-output-error":
+            self = .toolOutput(
+                toolCallId: try container.decode(String.self, forKey: .toolCallId),
+                output: .object(["error": .string((try? container.decode(String.self, forKey: .errorText)) ?? "Tool failed")])
             )
         default:
             self = .other
